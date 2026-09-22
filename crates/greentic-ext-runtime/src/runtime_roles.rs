@@ -1,11 +1,15 @@
 //! `roles` interface dispatch for design extensions.
 //!
-//! Mirrors the export-walking pattern in [`crate::runtime`] (see
-//! `render_bundle` / `validate_content`) but lives in its own module to
-//! keep `runtime.rs` under the workspace 500-line cap.
+//! Mirrors the export-walking pattern of the sibling dispatch modules
+//! ([`crate::runtime_design`], [`crate::runtime_bundle`]): resolve a fresh
+//! store + instance, resolve the interface newest-first, call the typed
+//! signature, map the WIT error onto a host type.
+//!
+//! `roles` keeps its own version table rather than reusing `DESIGN_VERSIONS`:
+//! the interface never existed at `@0.1.0`, so falling back that far would
+//! look for an interface that cannot be there.
 
 use crate::error::RuntimeError;
-use crate::loaded::ExtensionId;
 use crate::runtime::ExtensionRuntime;
 use crate::types::{
     CompileContext, Diagnostic, HostExtensionError, RoleError, RoleSpec, Severity, TargetKind,
@@ -28,19 +32,7 @@ impl ExtensionRuntime {
     pub fn list_roles(&self, ext_id: &str) -> Result<Vec<RoleSpec>, RuntimeError> {
         use crate::host_bindings::exports::greentic::extension_design0_2_0::roles::RoleSpec as WitRoleSpec;
 
-        let loaded = self
-            .loaded()
-            .get(&ExtensionId(ext_id.to_string()))
-            .cloned()
-            .ok_or_else(|| RuntimeError::NotFound(ext_id.to_string()))?;
-
-        let (mut store, instance) = loaded
-            .build_store_and_instance(
-                self.engine(),
-                self.host_overrides().clone(),
-                &crate::host_ports::HostCallContext::default(),
-            )
-            .map_err(RuntimeError::Wasmtime)?;
+        let (mut store, instance) = self.dispatch_instance(ext_id)?;
 
         // Try newest first; fall back gracefully to empty if neither version
         // is exported (older extensions that pre-date roles entirely).
@@ -93,19 +85,7 @@ impl ExtensionRuntime {
     ) -> Result<Vec<Diagnostic>, RuntimeError> {
         use crate::host_bindings::exports::greentic::extension_design0_2_0::roles::Diagnostic as WitDiagnostic;
 
-        let loaded = self
-            .loaded()
-            .get(&ExtensionId(ext_id.to_string()))
-            .cloned()
-            .ok_or_else(|| RuntimeError::NotFound(ext_id.to_string()))?;
-
-        let (mut store, instance) = loaded
-            .build_store_and_instance(
-                self.engine(),
-                self.host_overrides().clone(),
-                &crate::host_ports::HostCallContext::default(),
-            )
-            .map_err(RuntimeError::Wasmtime)?;
+        let (mut store, instance) = self.dispatch_instance(ext_id)?;
 
         let (iface_idx, iface_name, _version) = crate::runtime::resolve_iface_versions(
             &mut store,
@@ -150,23 +130,15 @@ impl ExtensionRuntime {
         entry_json: &str,
         ctx: Option<&CompileContext>,
     ) -> Result<String, RoleError> {
-        let loaded = self
-            .loaded()
-            .get(&ExtensionId(ext_id.to_string()))
-            .cloned()
-            .ok_or_else(|| RoleError::UnknownRole(ext_id.to_string()))?;
-
-        let (mut store, instance) = loaded
-            .build_store_and_instance(
-                self.engine(),
-                self.host_overrides().clone(),
-                &crate::host_ports::HostCallContext::default(),
-            )
-            .map_err(|e| {
-                RoleError::Host(HostExtensionError::Internal(format!(
-                    "instantiate '{ext_id}': {e}"
-                )))
-            })?;
+        // A missing extension surfaces as `UnknownRole`, not `NotFound`: from
+        // the LLM's point of view "no such extension" and "no such role" call
+        // for the same retry, so `compile_role` collapses them deliberately.
+        let (mut store, instance) = self.dispatch_instance(ext_id).map_err(|e| match e {
+            RuntimeError::NotFound(id) => RoleError::UnknownRole(id),
+            other => RoleError::Host(HostExtensionError::Internal(format!(
+                "instantiate '{ext_id}': {other}"
+            ))),
+        })?;
 
         let (iface_idx, iface_name, version) = crate::runtime::resolve_iface_versions(
             &mut store,

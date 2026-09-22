@@ -1382,9 +1382,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-extension-sdk-contract"
-version = "1.2.23"
+version = "1.2.24-dev.35755064608"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a8241273d4a355f349d66caa04898833d8ebc0464f354a591f7aba1ed3661ac"
+checksum = "53d9912f31e82b1269375106ce8db58cf51c1cce75405725cffbdb0b3b69902d"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1403,9 +1403,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-extension-sdk-registry"
-version = "1.2.23"
+version = "1.2.24-dev.35755064608"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebcc321eda0441df2d15fa614e32984b777682ee60f56cf425bc0cbd5868ff5a"
+checksum = "0220cec6fe808f2ed3f5c23117a76e63e9a6b2e1dc760ed9a277ded31558b81b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1434,9 +1434,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-extension-sdk-state"
-version = "1.2.23"
+version = "1.2.24-dev.35755064608"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd17b305f6e6ab02b28d1ba9391a7cc6646246cc803a7068c1d6e9050ad1e970"
+checksum = "7765f23783150168a398b5a310b866fc6be09bcaffb52839e4dea75268020c7c"
 dependencies = [
  "fs2",
  "semver",
@@ -1447,9 +1447,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-extension-sdk-testing"
-version = "1.2.23"
+version = "1.2.24-dev.35755064608"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32290e1590f5a43802c6a6e9b01889ec40fd6cc7ab8c49ef102d7846e49464b4"
+checksum = "6e7709ae008f9642ade3f735488fc9d325844bafc78dbac4e6456fb18b9ce470"
 dependencies = [
  "anyhow",
  "ciborium",
@@ -1464,9 +1464,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-types"
-version = "1.2.0-dev.30553518006"
+version = "1.2.0-dev.35752963135"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7c5266cd7e15a9b5ab2475e6a54ca4f2b772fa13d9e62c6c76b50439fdf29ad"
+checksum = "c44b7b6ecfefb00d3079874706cc784bf09749d92668a16b806dd3406eb5522a"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2551,9 +2551,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",

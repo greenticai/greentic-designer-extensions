@@ -7,8 +7,14 @@ cargo fmt --all -- --check
 echo "==> cargo clippy"
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-echo "==> cargo test"
+echo "==> cargo test (all features)"
 cargo test --workspace --all-features --locked
+
+# Also exercise the default feature shape. `dev-allow-unsigned` compiles the
+# signature-bypass branch in, so an all-features-only suite never checks that a
+# production build lacks it — and that branch is the one that matters most.
+echo "==> cargo test (default features)"
+cargo test --workspace --locked
 
 echo "==> cargo build (release)"
 cargo build --workspace --locked --release

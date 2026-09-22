@@ -1,10 +1,16 @@
+//! Per-Store host context handed to every WIT invocation.
+//!
+//! This module owns the state and its builder. The `Host` trait impls that
+//! back the imported interfaces live in the siblings: `host_state_ports`
+//! (logging / i18n / secrets / broker), `host_state_net` (http / llm), and
+//! `host_state_oauth`, so no single file carries the whole host surface.
+
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::AtomicU32;
 
 use wasmtime::component::ResourceTable;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
-use crate::host_bindings::greentic::extension_host::{broker, http, i18n, llm, logging, secrets};
 use crate::host_ports::{KeyTranslator, LlmPort, SecretsBackend, Translator};
 use crate::url_matcher::UrlMatcher;
 use greentic_extension_sdk_contract::describe::Permissions;
@@ -15,23 +21,34 @@ pub const MAX_BROKER_DEPTH: u32 = 8;
 
 /// Per-Store host context. One `HostState` is built per WIT invocation —
 /// the dependencies live in `Arc`s so cloning is cheap.
+///
+/// Every field is private or `pub(crate)`: `permissions` in particular is the
+/// allow-list each host fn checks against, so it must not be reachable — let
+/// alone writable — from outside the crate.
 pub struct HostState {
-    pub extension_id: String,
-    pub permissions: Permissions,
-    pub call_depth: AtomicU32,
-    translator: Arc<dyn Translator>,
-    secrets_backend: Arc<dyn SecretsBackend>,
-    http_client: Option<reqwest::blocking::Client>,
-    llm_port: Option<Arc<dyn LlmPort>>,
+    pub(crate) extension_id: String,
+    pub(crate) permissions: Permissions,
+    pub(crate) call_depth: AtomicU32,
+    pub(crate) translator: Arc<dyn Translator>,
+    pub(crate) secrets_backend: Arc<dyn SecretsBackend>,
+    pub(crate) http_client: Option<reqwest::blocking::Client>,
+    /// Ceiling on one outbound request made on the guest's behalf. The wasm
+    /// deadline cannot interrupt a blocking host call, so this is the only
+    /// thing bounding `host.http.fetch`.
+    pub(crate) http_timeout: std::time::Duration,
+    pub(crate) llm_port: Option<Arc<dyn LlmPort>>,
     /// Per-call caller context for this dispatch (tenant slug + authenticated
     /// user email), threaded from the host's
     /// [`crate::host_ports::HostCallContext`] and forwarded to host ports.
     /// `Default` (all `None`) when the host runs single-tenant/dev.
-    call_ctx: crate::host_ports::HostCallContext,
-    url_matcher: UrlMatcher,
-    runtime_weak: std::sync::Weak<crate::runtime::ExtensionRuntime>,
-    // consumed by the oauth broker Host impl below
-    oauth_config: Option<crate::oauth::OAuthBrokerConfig>,
+    pub(crate) call_ctx: crate::host_ports::HostCallContext,
+    pub(crate) url_matcher: UrlMatcher,
+    pub(crate) runtime_weak: std::sync::Weak<crate::runtime::ExtensionRuntime>,
+    pub(crate) oauth_config: Option<crate::oauth::OAuthBrokerConfig>,
+    /// Store-wide memory/table budget, read back by `Store::limiter`. Lives
+    /// here because wasmtime resolves the limiter out of the store's data on
+    /// every growth request.
+    pub(crate) limits: crate::limits::PackLimits,
     // WASI state — required because cargo-component-built WASM components
     // implicitly import WASI interfaces (wasi:cli/environment etc.).
     wasi: WasiCtx,
@@ -55,7 +72,18 @@ impl HostState {
             runtime_weak: std::sync::Weak::new(),
             call_depth_start: 0,
             oauth_config: None,
+            http_timeout: crate::limits::http_timeout_for(None),
         }
+    }
+
+    #[must_use]
+    pub fn extension_id(&self) -> &str {
+        &self.extension_id
+    }
+
+    #[must_use]
+    pub fn permissions(&self) -> &Permissions {
+        &self.permissions
     }
 
     #[must_use]
@@ -74,7 +102,7 @@ impl HostState {
     }
 }
 
-/// Builder for [`HostState`]. Avoids a 7-positional-arg constructor.
+/// Builder for [`HostState`]. Avoids a 10-positional-arg constructor.
 pub struct HostStateBuilder {
     extension_id: String,
     permissions: Permissions,
@@ -87,6 +115,7 @@ pub struct HostStateBuilder {
     runtime_weak: std::sync::Weak<crate::runtime::ExtensionRuntime>,
     call_depth_start: u32,
     oauth_config: Option<crate::oauth::OAuthBrokerConfig>,
+    http_timeout: std::time::Duration,
 }
 
 impl HostStateBuilder {
@@ -95,21 +124,40 @@ impl HostStateBuilder {
         self.translator = t;
         self
     }
+
     #[must_use]
     pub fn secrets_backend(mut self, s: Arc<dyn SecretsBackend>) -> Self {
         self.secrets_backend = s;
         self
     }
+
+    /// Supply the HTTP client backing `host.http.fetch`.
+    ///
+    /// The client's redirect policy is part of the security boundary: the
+    /// allow-list is enforced per URL, so a client that follows redirects can
+    /// be walked off the allow-list by an allowed host. `host.http.fetch`
+    /// re-checks the final URL and refuses a response that landed off-list, but
+    /// a host that wants the request never to leave the list at all should pass
+    /// a client built with `redirect::Policy::none()`.
     #[must_use]
     pub fn http_client(mut self, c: Option<reqwest::blocking::Client>) -> Self {
         self.http_client = c;
         self
     }
+
+    /// Ceiling on a single outbound request made for the guest.
+    #[must_use]
+    pub fn http_timeout(mut self, t: std::time::Duration) -> Self {
+        self.http_timeout = t;
+        self
+    }
+
     #[must_use]
     pub fn llm_port(mut self, p: Option<Arc<dyn LlmPort>>) -> Self {
         self.llm_port = p;
         self
     }
+
     /// Set the per-call caller context (tenant slug + authenticated user
     /// email) for this dispatch. Threaded into host ports (today the LLM port)
     /// so the host can resolve per-tenant and validate per-user identity.
@@ -118,21 +166,25 @@ impl HostStateBuilder {
         self.call_ctx = ctx;
         self
     }
+
     #[must_use]
     pub fn url_matcher(mut self, m: UrlMatcher) -> Self {
         self.url_matcher = m;
         self
     }
+
     #[must_use]
     pub fn runtime_weak(mut self, w: std::sync::Weak<crate::runtime::ExtensionRuntime>) -> Self {
         self.runtime_weak = w;
         self
     }
+
     #[must_use]
     pub fn call_depth_start(mut self, n: u32) -> Self {
         self.call_depth_start = n;
         self
     }
+
     #[must_use]
     pub fn oauth_config(mut self, c: Option<crate::oauth::OAuthBrokerConfig>) -> Self {
         self.oauth_config = c;
@@ -141,8 +193,6 @@ impl HostStateBuilder {
 
     #[must_use]
     pub fn build(self) -> HostState {
-        let wasi = WasiCtxBuilder::new().build();
-        let table = ResourceTable::new();
         HostState {
             extension_id: self.extension_id,
             permissions: self.permissions,
@@ -150,13 +200,18 @@ impl HostStateBuilder {
             translator: self.translator,
             secrets_backend: self.secrets_backend,
             http_client: self.http_client,
+            http_timeout: self.http_timeout,
             llm_port: self.llm_port,
             call_ctx: self.call_ctx,
             url_matcher: self.url_matcher,
             runtime_weak: self.runtime_weak,
             oauth_config: self.oauth_config,
-            wasi,
-            table,
+            limits: crate::limits::PackLimits::new(),
+            // A default WASI context grants no preopened directory, no
+            // environment, and no stdio — cargo-component imports the
+            // interfaces unconditionally, but nothing behind them is reachable.
+            wasi: WasiCtxBuilder::new().build(),
+            table: ResourceTable::new(),
         }
     }
 }
@@ -173,720 +228,21 @@ impl WasiView for HostState {
     }
 }
 
-impl logging::Host for HostState {
-    fn log(&mut self, level: logging::Level, target: String, message: String) {
-        let ext = &self.extension_id;
-        match level {
-            logging::Level::Trace => tracing::trace!(%ext, %target, "{message}"),
-            logging::Level::Debug => tracing::debug!(%ext, %target, "{message}"),
-            logging::Level::Info => tracing::info!(%ext, %target, "{message}"),
-            logging::Level::Warn => tracing::warn!(%ext, %target, "{message}"),
-            logging::Level::Error => tracing::error!(%ext, %target, "{message}"),
-        }
-    }
-
-    fn log_kv(
-        &mut self,
-        level: logging::Level,
-        target: String,
-        message: String,
-        fields: Vec<(String, String)>,
-    ) {
-        let pairs: Vec<String> = fields.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        let msg = if pairs.is_empty() {
-            message
-        } else {
-            format!("{message} {{{}}}", pairs.join(", "))
-        };
-        self.log(level, target, msg);
-    }
-}
-
-// i18n / secrets / broker / http impls are wired in tasks B.2, B.3,
-// B.4, B.5. The B.7 grep gate enforces that no impl falls back to the
-// historical stub sentinel string.
-
-impl i18n::Host for HostState {
-    fn t(&mut self, key: String) -> String {
-        self.translator.t(&key)
-    }
-    fn tf(&mut self, key: String, args: Vec<(String, String)>) -> String {
-        let borrowed: Vec<(&str, &str)> =
-            args.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        self.translator.tf(&key, &borrowed)
-    }
-}
-
-impl secrets::Host for HostState {
-    fn get(&mut self, uri: String) -> Result<String, String> {
-        // Permission check: every secret URI the extension reads must be
-        // declared verbatim or as a prefix in `permissions.secrets`. Strict
-        // prefix match (no glob today — that's a follow-up if needed).
-        let permitted = self
-            .permissions
-            .secrets
-            .iter()
-            .any(|allowed| uri == *allowed || uri.starts_with(&format!("{allowed}/")));
-        if !permitted {
-            tracing::warn!(
-                ext = %self.extension_id,
-                requested = %uri,
-                "secrets::get permission denied"
-            );
-            return Err(format!("permission denied for secret: {uri}"));
-        }
-        match self.secrets_backend.get(&uri) {
-            Ok(value) => Ok(value),
-            Err(crate::host_ports::SecretsError::NotFound(k)) => {
-                Err(format!("secret not found: {k}"))
-            }
-            Err(crate::host_ports::SecretsError::Backend(msg)) => {
-                tracing::error!(ext = %self.extension_id, %msg, "secrets backend error");
-                Err(format!("secrets backend error: {msg}"))
-            }
-        }
-    }
-}
-
-impl broker::Host for HostState {
-    fn call_extension(
-        &mut self,
-        kind: String,
-        target_id: String,
-        function: String,
-        _args_json: String,
-    ) -> Result<String, String> {
-        // 1. Permission check — declared kinds only.
-        if !self
-            .permissions
-            .call_extension_kinds
-            .iter()
-            .any(|k| k == &kind)
-        {
-            tracing::warn!(
-                ext = %self.extension_id,
-                requested_kind = %kind,
-                "broker::call_extension permission denied"
-            );
-            return Err(format!(
-                "{} may not call {kind} extensions",
-                self.extension_id
-            ));
-        }
-        // 2. Depth check — prevent unbounded recursion across host boundaries.
-        let depth = self.call_depth.load(Ordering::Relaxed);
-        if depth >= MAX_BROKER_DEPTH {
-            tracing::warn!(
-                ext = %self.extension_id,
-                depth,
-                "broker::call_extension max depth exceeded"
-            );
-            return Err(format!(
-                "max broker call depth exceeded ({depth} >= {MAX_BROKER_DEPTH})"
-            ));
-        }
-        // 3. Resolve runtime — `runtime_weak` is `Weak::new()` in unit tests
-        //    that use `HostState::builder(...).build()` without supplying a
-        //    runtime. Surface a clear error so test code distinguishes
-        //    "no runtime context" from "permission denied".
-        let Some(_rt) = self.runtime_weak.upgrade() else {
-            return Err("broker: no runtime context available".into());
-        };
-        // 4. Cross-extension dispatch — full implementation requires
-        //    `ExtensionRuntime::invoke_tool_with_depth(self: &Arc<Self>,
-        //    ...)` which cascades the runtime API to `&Arc<Self>` and
-        //    updates every caller. Deferred to a follow-up alongside the
-        //    WASM broker fixtures. Today's permission + depth check is
-        //    the security-load-bearing portion of B.5.
-        Err(format!(
-            "broker: dispatch to {target_id}.{function} pending (B.5 WASM round-trip)"
-        ))
-    }
-}
-
-impl http::Host for HostState {
-    fn fetch(&mut self, req: http::Request) -> Result<http::Response, String> {
-        // 1. Permission check via strict UrlMatcher.
-        if !self.url_matcher.is_allowed(&req.url) {
-            tracing::warn!(
-                ext = %self.extension_id,
-                url = %req.url,
-                "http::fetch permission denied"
-            );
-            return Err(format!("network not allowed for url: {}", req.url));
-        }
-
-        // 2. Build the reqwest request. `http_client` is `None` when the
-        //    host wasn't given one (typical for unit tests). Surface a
-        //    clean error rather than panic, and don't lazy-construct a
-        //    client here — see `HostOverrides` doc comment.
-        let client = self
-            .http_client
-            .as_ref()
-            .ok_or_else(|| "http client not configured for this runtime".to_string())?;
-        let method = match req.method.to_uppercase().as_str() {
-            "GET" => reqwest::Method::GET,
-            "POST" => reqwest::Method::POST,
-            "PUT" => reqwest::Method::PUT,
-            "DELETE" => reqwest::Method::DELETE,
-            "PATCH" => reqwest::Method::PATCH,
-            "HEAD" => reqwest::Method::HEAD,
-            other => return Err(format!("unsupported http method: {other}")),
-        };
-        let mut builder = client.request(method, &req.url);
-        for (k, v) in &req.headers {
-            builder = builder.header(k.as_str(), v.as_str());
-        }
-        if let Some(body) = req.body {
-            builder = builder.body(body);
-        }
-        // 3. Execute (blocking — wasmtime sync wiring expects sync host fns).
-        let resp = builder.send().map_err(|e| {
-            tracing::error!(ext = %self.extension_id, error = %e, "http::fetch transport error");
-            format!("http transport error: {e}")
-        })?;
-        let status = resp.status().as_u16();
-        let headers = resp
-            .headers()
-            .iter()
-            .filter_map(|(k, v)| {
-                v.to_str()
-                    .ok()
-                    .map(|s| (k.as_str().to_string(), s.to_string()))
-            })
-            .collect();
-        let body = resp
-            .bytes()
-            .map_err(|e| format!("http body error: {e}"))?
-            .to_vec();
-        Ok(http::Response {
-            status,
-            headers,
-            body,
-        })
-    }
-}
-
-impl llm::Host for HostState {
-    fn complete(&mut self, request: llm::LlmRequest) -> Result<llm::LlmResponse, String> {
-        // 1. Resolve the effective role from describe permissions. A `role_hint`
-        //    must be one the extension declared; with no hint we allow the sole
-        //    declared role and otherwise require disambiguation.
-        let declared = &self.permissions.llm_roles;
-        let role = match (&request.role_hint, declared.as_slice()) {
-            (Some(hint), roles) if roles.iter().any(|r| r == hint) => hint.clone(),
-            (Some(hint), _) => {
-                tracing::warn!(ext = %self.extension_id, requested = %hint, "llm role not permitted");
-                return Err(format!("llm role not permitted: {hint}"));
-            }
-            (None, [sole]) => sole.clone(),
-            (None, []) => {
-                return Err("llm role not permitted: extension declares no llm_roles".to_string());
-            }
-            (None, _many) => {
-                return Err(
-                    "llm role-hint required: extension declares multiple llm_roles".to_string(),
-                );
-            }
-        };
-
-        // 2. Resolve the port. Absent in unit tests and runtimes the host did
-        //    not wire for LLM use — surface a clean error rather than panic.
-        let Some(port) = self.llm_port.as_ref() else {
-            return Err("llm not configured for this runtime".to_string());
-        };
-
-        // 3. Map the WIT request onto the host port, call, map the response.
-        let port_req = crate::host_ports::LlmPortRequest {
-            system_prompt: request.system_prompt,
-            messages: request
-                .messages
-                .into_iter()
-                .map(|m| (m.role, m.content))
-                .collect(),
-            response_format: match request.response_format {
-                None | Some(llm::ResponseFormat::Text) => {
-                    crate::host_ports::LlmPortResponseFormat::Text
-                }
-                Some(llm::ResponseFormat::Json) => crate::host_ports::LlmPortResponseFormat::Json,
-                Some(llm::ResponseFormat::JsonSchema(s)) => {
-                    crate::host_ports::LlmPortResponseFormat::JsonSchema(s)
-                }
-            },
-        };
-        match port.complete(&self.extension_id, &self.call_ctx, &role, port_req) {
-            Ok(r) => Ok(llm::LlmResponse {
-                content: r.content,
-                total_tokens: r.total_tokens,
-            }),
-            Err(e) => {
-                tracing::warn!(ext = %self.extension_id, %role, error = %e, "llm port error");
-                Err(e.to_string())
-            }
-        }
-    }
-}
-
-impl crate::host_bindings::design_v04::greentic::oauth_broker::broker_v1::Host for HostState {
-    /// Retrieve a token for the given OAuth provider.
-    ///
-    /// Permission gate: the provider must be declared in
-    /// `permissions.oauth_providers`. If not, returns a JSON error string with
-    /// `"error": "permission_denied"` — fails closed.
-    ///
-    /// When permitted but no `oauth_config` or `http_client` is present (e.g.
-    /// the runtime was not configured with an OAuth broker), returns
-    /// `"error": "oauth_broker_unconfigured"`.
-    ///
-    /// The `shared_secret` is NEVER logged.
-    fn get_token(&mut self, provider_id: String, _subject: String, scopes: Vec<String>) -> String {
-        // Permission gate — mirror the secrets/network allowlist checks.
-        if !self
-            .permissions
-            .oauth_providers
-            .iter()
-            .any(|p| p == &provider_id)
-        {
-            tracing::warn!(
-                ext = %self.extension_id,
-                provider = %provider_id,
-                "oauth get-token permission denied"
-            );
-            return serde_json::json!({"error": "permission_denied", "provider": provider_id})
-                .to_string();
-        }
-
-        let Some(cfg) = self.oauth_config.clone() else {
-            return "{\"error\":\"oauth_broker_unconfigured\"}".to_string();
-        };
-        let Some(client) = self.http_client.clone() else {
-            return "{\"error\":\"oauth_broker_unconfigured\"}".to_string();
-        };
-
-        let req = crate::oauth::ResourceTokenRequest {
-            http_base_url: cfg.http_base_url,
-            env: cfg.env,
-            tenant: cfg.tenant,
-            team: cfg.team,
-            resource_id: provider_id.clone(),
-            scopes,
-        };
-
-        match crate::oauth::request_resource_token_blocking(
-            &client,
-            &req,
-            cfg.shared_secret.as_deref(),
-        ) {
-            Ok(resp) => serde_json::to_string(&resp)
-                .unwrap_or_else(|_| "{\"error\":\"encode_failed\"}".to_string()),
-            Err(e) => {
-                tracing::warn!(provider = %provider_id, error = %e, "oauth get-token failed");
-                "{\"error\":\"broker_request_failed\"}".to_string()
-            }
-        }
-    }
-
-    /// Build a consent URL for the given OAuth provider.
-    ///
-    /// Not yet implemented in the design-extension runtime — returns an empty
-    /// string. Consent flows are handled by the OAuth broker service directly;
-    /// this stub satisfies the WIT interface contract.
-    fn get_consent_url(
-        &mut self,
-        _provider_id: String,
-        _subject: String,
-        _scopes: Vec<String>,
-        _redirect_path: String,
-        _extra_json: String,
-    ) -> String {
-        String::new()
-    }
-
-    /// Exchange an authorization code for a token set.
-    ///
-    /// Not yet implemented in the design-extension runtime — returns an empty
-    /// string. Code exchange is handled by the OAuth broker service directly;
-    /// this stub satisfies the WIT interface contract.
-    fn exchange_code(
-        &mut self,
-        _provider_id: String,
-        _subject: String,
-        _code: String,
-        _redirect_path: String,
-    ) -> String {
-        String::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host_bindings::greentic::extension_host::i18n::Host as I18nHost;
-    use crate::host_ports::Translator;
-    use std::sync::Arc;
-
-    struct EnglishToIndonesian;
-    impl Translator for EnglishToIndonesian {
-        fn t(&self, key: &str) -> String {
-            match key {
-                "greentic.test.hello" => "Halo dunia".to_string(),
-                _ => key.to_string(),
-            }
-        }
-        fn tf(&self, key: &str, args: &[(&str, &str)]) -> String {
-            let template = self.t(key);
-            args.iter()
-                .fold(template, |acc, (k, v)| acc.replace(&format!("{{{k}}}"), v))
-        }
-    }
-
-    fn host_with_translator(t: Arc<dyn Translator>) -> HostState {
-        HostState::builder("test-ext".to_string(), Permissions::default())
-            .translator(t)
-            .build()
-    }
 
     #[test]
-    fn i18n_t_resolves_translated_value() {
-        let mut h = host_with_translator(Arc::new(EnglishToIndonesian));
-        let got = h.t("greentic.test.hello".to_string());
-        assert_eq!(got, "Halo dunia");
-    }
-
-    #[test]
-    fn i18n_t_falls_back_to_key_for_unknown() {
-        let mut h = host_with_translator(Arc::new(EnglishToIndonesian));
-        let got = h.t("missing.key".to_string());
-        assert_eq!(got, "missing.key");
-    }
-
-    #[test]
-    fn secrets_get_returns_value_when_permitted() {
-        use crate::host_bindings::greentic::extension_host::secrets::Host as SecretsHost;
-        use crate::host_ports::InMemorySecrets;
-
-        let mut backend = InMemorySecrets::default();
-        backend.insert("api.openai.com/api_key", "sk-real");
-        let mut perms = Permissions::default();
-        perms.secrets.push("api.openai.com/api_key".to_string());
-
-        let mut h = HostState::builder("test-ext".to_string(), perms)
-            .secrets_backend(Arc::new(backend))
-            .build();
-        let v = h.get("api.openai.com/api_key".to_string()).unwrap();
-        assert_eq!(v, "sk-real");
-    }
-
-    #[test]
-    fn secrets_get_denies_when_uri_not_in_permissions() {
-        use crate::host_bindings::greentic::extension_host::secrets::Host as SecretsHost;
-        use crate::host_ports::InMemorySecrets;
-
-        let mut backend = InMemorySecrets::default();
-        backend.insert("api.openai.com/api_key", "sk-real");
-        let perms = Permissions::default();
-
-        let mut h = HostState::builder("test-ext".to_string(), perms)
-            .secrets_backend(Arc::new(backend))
-            .build();
-        let err = h.get("api.openai.com/api_key".to_string()).unwrap_err();
+    fn builder_defaults_deny_everything_the_host_did_not_wire() {
+        let h = HostState::builder("test-ext".to_string(), Permissions::default()).build();
+        assert_eq!(h.extension_id(), "test-ext");
         assert!(
-            err.contains("permission denied"),
-            "expected permission denied, got: {err}"
+            h.url_matcher().patterns().is_empty(),
+            "the default matcher must be deny-all"
         );
-    }
-
-    #[test]
-    fn broker_denies_when_kind_not_in_permissions() {
-        use crate::host_bindings::greentic::extension_host::broker::Host as BrokerHost;
-
-        let mut perms = Permissions::default();
-        perms.call_extension_kinds.push("provider".to_string());
-        let mut h = HostState::builder("caller".into(), perms).build();
-
-        let err = h
-            .call_extension(
-                "design".into(),
-                "greentic.target".into(),
-                "do_something".into(),
-                "{}".into(),
-            )
-            .unwrap_err();
-        assert!(err.contains("may not call"), "got: {err}");
-    }
-
-    #[test]
-    fn broker_rejects_when_depth_exceeded() {
-        use crate::host_bindings::greentic::extension_host::broker::Host as BrokerHost;
-
-        let mut perms = Permissions::default();
-        perms.call_extension_kinds.push("design".to_string());
-        let mut h = HostState::builder("caller".into(), perms)
-            .call_depth_start(MAX_BROKER_DEPTH)
-            .build();
-        let err = h
-            .call_extension(
-                "design".into(),
-                "greentic.target".into(),
-                "do".into(),
-                "{}".into(),
-            )
-            .unwrap_err();
-        assert!(err.contains("max"), "expected depth error, got: {err}");
-    }
-
-    #[test]
-    fn http_fetch_denied_when_url_not_in_matcher() {
-        use crate::host_bindings::greentic::extension_host::http::{Host as HttpHost, Request};
-
-        let mut h = HostState::builder("test-ext".into(), Permissions::default())
-            .url_matcher(crate::url_matcher::UrlMatcher::from_patterns(vec![
-                "https://allowed.com/*".into(),
-            ]))
-            .build();
-        let req = Request {
-            method: "GET".into(),
-            url: "https://evil.com/".into(),
-            headers: vec![],
-            body: None,
-        };
-        let err = h.fetch(req).unwrap_err();
-        assert!(
-            err.contains("not allowed") || err.contains("permission denied"),
-            "got: {err}"
-        );
-    }
-
-    #[test]
-    fn secrets_get_surfaces_backend_not_found() {
-        use crate::host_bindings::greentic::extension_host::secrets::Host as SecretsHost;
-        use crate::host_ports::InMemorySecrets;
-
-        let backend = InMemorySecrets::default();
-        let mut perms = Permissions::default();
-        perms.secrets.push("api.openai.com/api_key".to_string());
-
-        let mut h = HostState::builder("test-ext".to_string(), perms)
-            .secrets_backend(Arc::new(backend))
-            .build();
-        let err = h.get("api.openai.com/api_key".to_string()).unwrap_err();
-        assert!(err.contains("not found"), "got: {err}");
-    }
-
-    /// In-test [`LlmPort`] that records the `extension_id` / `ctx` / `role`
-    /// it was called with and echoes the system prompt back. Asserts the host
-    /// resolved the expected role and threaded the expected tenant + user email
-    /// before forwarding.
-    ///
-    /// `expected_*` prefix is deliberate (these are the values the port asserts
-    /// against, not generic data), so the shared-prefix lint is silenced here.
-    #[allow(clippy::struct_field_names)]
-    struct FakeLlm {
-        expected_extension_id: String,
-        expected_tenant: Option<String>,
-        expected_user_email: Option<String>,
-        expected_role: String,
-    }
-
-    impl crate::host_ports::LlmPort for FakeLlm {
-        fn complete(
-            &self,
-            extension_id: &str,
-            ctx: &crate::host_ports::HostCallContext,
-            role: &str,
-            request: crate::host_ports::LlmPortRequest,
-        ) -> Result<crate::host_ports::LlmPortResponse, crate::host_ports::LlmPortError> {
-            assert_eq!(extension_id, self.expected_extension_id, "extension_id");
-            assert_eq!(ctx.tenant, self.expected_tenant, "tenant");
-            assert_eq!(ctx.user_email, self.expected_user_email, "user_email");
-            assert_eq!(role, self.expected_role, "role");
-            Ok(crate::host_ports::LlmPortResponse {
-                content: format!("echo:{}", request.system_prompt),
-                total_tokens: Some(7),
-            })
-        }
-    }
-
-    fn llm_request(role_hint: Option<&str>) -> llm::LlmRequest {
-        llm::LlmRequest {
-            role_hint: role_hint.map(str::to_string),
-            system_prompt: "you are a composer".to_string(),
-            messages: vec![],
-            response_format: None,
-        }
-    }
-
-    #[test]
-    fn llm_complete_resolves_sole_declared_role() {
-        use crate::host_bindings::greentic::extension_host::llm::Host as LlmHost;
-
-        let mut perms = Permissions::default();
-        perms.llm_roles.push("sorla_composer".to_string());
-        let port = Arc::new(FakeLlm {
-            expected_extension_id: "test-ext".to_string(),
-            expected_tenant: Some("acme".to_string()),
-            expected_user_email: None,
-            expected_role: "sorla_composer".to_string(),
-        });
-        let mut h = HostState::builder("test-ext".to_string(), perms)
-            .llm_port(Some(port))
-            .call_ctx(crate::host_ports::HostCallContext {
-                tenant: Some("acme".into()),
-                user_email: None,
-            })
-            .build();
-
-        let resp = h
-            .complete(llm_request(None))
-            .expect("complete should succeed");
-        assert_eq!(resp.content, "echo:you are a composer");
-        assert_eq!(resp.total_tokens, Some(7));
-    }
-
-    #[test]
-    fn llm_complete_passes_none_tenant_by_default() {
-        use crate::host_bindings::greentic::extension_host::llm::Host as LlmHost;
-
-        let mut perms = Permissions::default();
-        perms.llm_roles.push("sorla_composer".to_string());
-        let port = Arc::new(FakeLlm {
-            expected_extension_id: "test-ext".to_string(),
-            expected_tenant: None,
-            expected_user_email: None,
-            expected_role: "sorla_composer".to_string(),
-        });
-        // No `.call_ctx(...)` in the builder chain — the host runs
-        // single-tenant/dev, so the port must observe a default (all-`None`)
-        // context.
-        let mut h = HostState::builder("test-ext".to_string(), perms)
-            .llm_port(Some(port))
-            .build();
-
-        let resp = h
-            .complete(llm_request(None))
-            .expect("complete should succeed");
-        assert_eq!(resp.content, "echo:you are a composer");
-    }
-
-    #[test]
-    fn llm_complete_passes_user_email() {
-        use crate::host_bindings::greentic::extension_host::llm::Host as LlmHost;
-
-        let mut perms = Permissions::default();
-        perms.llm_roles.push("sorla_composer".to_string());
-        let port = Arc::new(FakeLlm {
-            expected_extension_id: "test-ext".to_string(),
-            expected_tenant: Some("acme".to_string()),
-            expected_user_email: Some("alice@acme.com".to_string()),
-            expected_role: "sorla_composer".to_string(),
-        });
-        let mut h = HostState::builder("test-ext".to_string(), perms)
-            .llm_port(Some(port))
-            .call_ctx(crate::host_ports::HostCallContext {
-                tenant: Some("acme".into()),
-                user_email: Some("alice@acme.com".into()),
-            })
-            .build();
-
-        let resp = h
-            .complete(llm_request(None))
-            .expect("complete should succeed");
-        assert_eq!(resp.content, "echo:you are a composer");
-    }
-
-    #[test]
-    fn llm_complete_rejects_undeclared_role() {
-        use crate::host_bindings::greentic::extension_host::llm::Host as LlmHost;
-
-        let perms = Permissions::default(); // no llm_roles declared
-        let port = Arc::new(FakeLlm {
-            expected_extension_id: "test-ext".to_string(),
-            expected_tenant: None,
-            expected_user_email: None,
-            expected_role: "sorla_composer".to_string(),
-        });
-        let mut h = HostState::builder("test-ext".to_string(), perms)
-            .llm_port(Some(port))
-            .build();
-
-        let err = h.complete(llm_request(Some("sorla_composer"))).unwrap_err();
-        assert!(err.contains("llm role not permitted"), "got: {err}");
-    }
-
-    #[test]
-    fn llm_complete_without_port_errors() {
-        use crate::host_bindings::greentic::extension_host::llm::Host as LlmHost;
-
-        let mut perms = Permissions::default();
-        perms.llm_roles.push("sorla_composer".to_string());
-        let mut h = HostState::builder("test-ext".to_string(), perms).build();
-
-        let err = h.complete(llm_request(None)).unwrap_err();
-        assert!(err.contains("llm not configured"), "got: {err}");
-    }
-
-    #[test]
-    fn llm_complete_requires_hint_when_multiple_roles() {
-        use crate::host_bindings::greentic::extension_host::llm::Host as LlmHost;
-
-        let mut perms = Permissions::default();
-        perms.llm_roles.push("a".to_string());
-        perms.llm_roles.push("b".to_string());
-        let port = Arc::new(FakeLlm {
-            expected_extension_id: "test-ext".to_string(),
-            expected_tenant: None,
-            expected_user_email: None,
-            expected_role: "unused".to_string(),
-        });
-        let mut h = HostState::builder("test-ext".to_string(), perms)
-            .llm_port(Some(port))
-            .build();
-
-        let err = h.complete(llm_request(None)).unwrap_err();
-        assert!(err.contains("role-hint required"), "got: {err}");
-    }
-
-    #[test]
-    fn i18n_tf_substitutes_named_args() {
-        struct GreetTranslator;
-        impl Translator for GreetTranslator {
-            fn t(&self, key: &str) -> String {
-                if key == "greentic.test.greet" {
-                    "Halo {name}!".to_string()
-                } else {
-                    key.to_string()
-                }
-            }
-            fn tf(&self, key: &str, args: &[(&str, &str)]) -> String {
-                let template = self.t(key);
-                args.iter()
-                    .fold(template, |acc, (k, v)| acc.replace(&format!("{{{k}}}"), v))
-            }
-        }
-        let mut h = host_with_translator(Arc::new(GreetTranslator));
-        let got = h.tf(
-            "greentic.test.greet".to_string(),
-            vec![("name".to_string(), "Bima".to_string())],
-        );
-        assert_eq!(got, "Halo Bima!");
-    }
-
-    #[test]
-    fn oauth_get_token_denied_when_provider_not_declared() {
-        use crate::host_bindings::design_v04::greentic::oauth_broker::broker_v1::Host as OAuthHost;
-        let mut h = HostState::builder("ext".into(), Permissions::default()).build();
-        let out = h.get_token("hubspot".into(), String::new(), vec![]);
-        assert!(out.contains("permission_denied"), "got: {out}");
-    }
-
-    #[test]
-    fn oauth_get_token_errors_when_unconfigured() {
-        use crate::host_bindings::design_v04::greentic::oauth_broker::broker_v1::Host as OAuthHost;
-        let mut perms = Permissions::default();
-        perms.oauth_providers.push("hubspot".into());
-        let mut h = HostState::builder("ext".into(), perms).build();
-        let out = h.get_token("hubspot".into(), String::new(), vec![]);
-        assert!(out.contains("oauth_broker_unconfigured"), "got: {out}");
+        assert!(h.http_client.is_none(), "no ambient http client");
+        assert!(h.llm_port.is_none(), "no ambient llm port");
+        assert!(h.oauth_config.is_none(), "no ambient oauth broker");
     }
 
     #[test]
@@ -900,8 +256,11 @@ mod tests {
             shared_secret: Some("s".into()),
         };
         let h = HostState::builder("test-ext".to_string(), Permissions::default())
-            .oauth_config(Some(cfg.clone()))
+            .oauth_config(Some(cfg))
             .build();
-        assert_eq!(h.oauth_config.as_ref().unwrap().tenant, "acme");
+        assert_eq!(
+            h.oauth_config.as_ref().map(|c| c.tenant.as_str()),
+            Some("acme")
+        );
     }
 }

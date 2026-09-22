@@ -1,5 +1,113 @@
 # Changelog
 
+## [1.3.0]
+
+Full audit pass — security, correctness, error handling, dead code, and the
+500-line-per-file convention — run as three rounds, with independent re-audits
+between them. The second round found that the first round's headline fix could
+be walked around entirely, which is why the security list below reads as pairs.
+
+### Fixed (security)
+
+- **The ledger did not cover the file that gets executed.** `verify_dir_manifest`
+  checked that every *listed* file hash-matched but never that every file *on
+  disk* was listed, while the SDK's archive verifier rejects exactly that. Since
+  `wasm_component_path` prefers a root `extension.wasm` unconditionally,
+  dropping one into a pack that ships none bought arbitrary code execution with
+  the describe signature, the manifest binding, and every listed hash still
+  verifying. The directory and the ledger must now cover each other — and
+  `gtpack.file`, a publisher-controlled string that previously went into
+  `join()` unvalidated, goes through the same path rule, so the file actually
+  loaded is necessarily one the ledger lists.
+- **Ledger paths could leave the pack.** An absolute path made `Path::join`
+  discard the pack root and `..` walked out of it; entries were read through a
+  symlink-following `read`. Paths must be plain and relative, and entries
+  regular files (`symlink_metadata`, so the link itself is what is checked).
+  The coverage comparison also lowered on-disk names through
+  `to_string_lossy().replace('\\', "/")`, so on Linux a file named `a\b.txt`
+  matched a ledger entry for `a/b.txt`; it compares paths now.
+- **Two URL parsers that disagreed.** `http_pattern_host` — the hand-rolled
+  parser gating the plain-http toggle — differed from `Url::parse` about where
+  an authority ends and how a scheme is spelled, so
+  `http://evil.com?@localhost/*` (and the `#@`, `\@`, `HTTP://`, leading-space
+  variants) got cleartext http to a public host. One parser decides both now.
+- **`UrlMatcher` ignored the port**, so one declared loopback dev port granted
+  every local listener; its path check was a raw `starts_with`, so `/v1/*`
+  covered `/v1evil`; and `%2f`/`%5c` survived normalization to re-emerge as
+  separators server-side. All three are exact now.
+- **`http::fetch` followed redirects off the allow-list.** The final URL is
+  re-checked and the response withheld when it lands off-list. Response bodies
+  are capped at 32 MiB; previously unbounded.
+- **Nothing bounded execution.** No fuel, no epoch, no `StoreLimits` — `loop {}`
+  in any loaded extension wedged the calling thread for the life of the process.
+  Every store now carries memory and table ceilings plus a wall-clock deadline
+  (`RuntimeConfig::dispatch_timeout`, default 5 minutes).
+- **Secrets in `Debug`.** `OAuthBrokerConfig::shared_secret`,
+  `ResourceTokenResponse::access_token`, and `DeployRequest::credentials_json`
+  were all rendered by derived impls. All redact. Guest URLs no longer reach
+  logs with their query strings intact.
+- **Secret declarations were not validated.** `secrets:` lined a `/` up at the
+  boundary offset and granted the whole namespace — and one process-wide
+  backend serves every extension, so that predicate is the entire isolation
+  boundary. A declaration naming no path segment is refused.
+- **`find_extension_dir` walked to the filesystem root**, so anything writable
+  under the watched tree got a load attempt and, on success, a TOFU pin under
+  an id of the writer's choosing. Bounded to `<root>/<kind>/<name>`.
+- The verified describe is threaded into the load rather than re-read, so the
+  id a pack is pinned under and the permissions it runs with are the ones the
+  gate checked.
+
+### Fixed
+
+- **Uninstalling an extension never unloaded it.** The removal path looked for
+  a `describe.json` beside the changed path — exactly the file an uninstall
+  deletes — so the event was dropped and the extension stayed dispatchable with
+  its capabilities advertised until restart.
+- **The three read-modify-writes of `loaded` were unsynchronised**, so a
+  concurrent removal could be lost, leaving an evicted extension's capabilities
+  advertised. All go through `ExtensionRuntime::mutate_loaded` under one lock,
+  which stores the map and its registry together.
+- `CapabilityRegistry` fell back to `VersionReq::STAR` on an unparseable
+  requirement — the narrowest input producing the widest grant, and enough for
+  one typo to manufacture a dependency cycle. Now unresolvable.
+- Guardrail `direction` defaulted to `inbound` on any unrecognised string.
+- The filesystem watcher discarded debouncer errors, so a dropped inotify queue
+  stopped hot reload silently.
+- The oauth-broker consent/exchange stubs returned `""`, indistinguishable from
+  success; they report `not_implemented`. `Url::join` no longer drops a base
+  path.
+
+### Changed
+
+- **Module layout.** `runtime.rs` (1702 lines) split into `runtime_config`,
+  `runtime_verify`, `runtime_registry`, `runtime_design`, `runtime_knowledge`,
+  `runtime_targets`, `runtime_bundle`; `host_state.rs` (907) into
+  `host_state_ports` / `host_state_net` / `host_state_oauth`; `loaded.rs` (621)
+  shed `net_permissions`. `limits.rs` is new. Largest source file: 439 lines.
+  A shared `dispatch_instance` helper replaced ~15 copies of the same preamble.
+- `ci/local_check.sh` runs the test suite in **both** feature shapes. An
+  all-features-only run never exercised the production build's lack of a
+  signature bypass, which is the claim that matters most.
+- No `unwrap()`, `expect()`, or `panic!()` remains on a non-test path.
+
+### Removed
+
+- `InstancePool` (`pool.rs`) — constructed per extension, never acquired from,
+  held `Store<()>` where the runtime uses `Store<HostState>` so it could not
+  have worked, and panicked on a poisoned lock.
+- `RuntimeError::{AlreadyLoaded, Contract, PermissionDenied}` and
+  `RuntimeEvent::CapabilityRegistryRebuilt` — never constructed, so dead arms
+  in every caller's `match`.
+
+### Breaking
+
+- `ExtensionRuntime::for_test()` returns `Result<Self, RuntimeError>`.
+- `HostState` fields are private; use the accessors.
+- `LoadedExtension::{load_from_dir, build_store_and_instance}` are
+  crate-private, so no public path instantiates unverified wasm.
+- `InMemorySecrets::insert` takes `&self`.
+- `RuntimeConfig` gains `dispatch_timeout`; construct via `from_paths`.
+
 ## [Unreleased]
 
 ### Changed

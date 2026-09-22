@@ -1,4 +1,8 @@
-#![allow(warnings)]
+// Everything below is `wasmtime::component::bindgen!` output. Generated code is
+// not held to this crate's lint bar, but the suppression is enumerated rather
+// than a blanket `allow(warnings)` so a *new* class of warning here still
+// surfaces instead of being pre-silenced.
+#![allow(clippy::all, clippy::pedantic, dead_code, unused_imports, missing_docs)]
 
 // Bind against the design-extension world from the component's perspective.
 // wasmtime bindgen! generates:
@@ -124,7 +128,7 @@ pub mod dw_composer_v02 {
 // Isolated submodule (same reason as deploy/bundle): the world shares
 // `greentic:extension-host/*` types, so binding at the root would conflict.
 // The world exports `control` and `observe` (the host calls them in
-// `runtime::{control,observe}`); it imports only `greentic:extension-host/logging`.
+// `runtime_sorx::{control,observe}`); it imports only `greentic:extension-host/logging`.
 // ---------------------------------------------------------------------------
 pub mod sorx {
     wasmtime::component::bindgen!({

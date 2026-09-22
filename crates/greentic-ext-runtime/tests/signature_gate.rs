@@ -86,6 +86,14 @@ fn allow_unsigned_env_bypasses_even_if_tampered() {
 
 /// When the `dev-allow-unsigned` feature is OFF (production build), the env
 /// var must NOT bypass signature verification — even if set.
+///
+/// This test compiles only in the default feature shape, and for a long time
+/// nothing ran that shape: `ci/local_check.sh` tested `--all-features` only,
+/// where the hatch *is* compiled in and merely unset. So the test existed and
+/// the claim it pins — that a production build has no bypass at all — went
+/// unchecked anyway. The fix was the second CI lane, not another test; an
+/// earlier attempt at this audit added a byte-for-byte duplicate of this
+/// function under a different name, which pinned nothing new.
 #[cfg(not(feature = "dev-allow-unsigned"))]
 #[test]
 fn allow_unsigned_env_is_ignored_without_feature() {
@@ -97,4 +105,51 @@ fn allow_unsigned_env_is_ignored_without_feature() {
         matches!(err, RuntimeError::SignatureInvalid { .. }),
         "without dev-allow-unsigned, env var must NOT bypass signature check; got {err:?}",
     );
+}
+
+/// A traversing `gtpack.file` must be refused at the call site.
+///
+/// This is the pack layout that ships no root `extension.wasm`, so the loader
+/// falls back to `describe.runtime.components[..].gtpack.file` — a
+/// publisher-controlled string. Unvalidated it reached `Path::join`, which an
+/// absolute path replaces outright and `..` walks out of, putting the compiled
+/// component outside the directory the ledger covers while every other check
+/// still passed.
+///
+/// Mutation testing found the fix for this had no test at all: reverting it to
+/// a bare `source_dir.join(...)` left the whole suite green, because every
+/// fixture ships a root `extension.wasm` and so never reaches the fallback.
+#[test]
+fn a_traversing_gtpack_file_is_refused() {
+    let _guard = EnvGuard::remove("GREENTIC_EXT_ALLOW_UNSIGNED");
+
+    for escape in ["../../../../tmp/payload.wasm", "/tmp/payload.wasm"] {
+        let (fx, sk) = signed_fixture(ExtensionKind::Design, "greentic.escaping-gtpack", "0.1.0");
+
+        // Drop the root `extension.wasm` so the loader takes the gtpack
+        // fallback — the branch no other fixture reaches.
+        std::fs::remove_file(fx.root().join("extension.wasm")).unwrap();
+
+        let raw = std::fs::read_to_string(fx.root().join("describe.json")).unwrap();
+        let mut describe: greentic_extension_sdk_contract::DescribeJson =
+            serde_json::from_str(&raw).unwrap();
+        for component in describe.runtime.components.values_mut() {
+            if let Some(gtpack) = component.gtpack.as_mut() {
+                gtpack.file = (*escape).to_string();
+            }
+        }
+        // Re-manifest, re-bind and re-sign, so the pack is internally
+        // consistent and only the traversal is left to reject.
+        support::finalize_signed_with_manifest(fx.root(), &mut describe, &sk);
+
+        let (mut rt, _trust) = new_runtime();
+        let err = rt
+            .register_loaded_from_dir(fx.root())
+            .expect_err("a gtpack.file that leaves the pack must be refused");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("not a plain relative path"),
+            "unexpected error for {escape}: {rendered}"
+        );
+    }
 }

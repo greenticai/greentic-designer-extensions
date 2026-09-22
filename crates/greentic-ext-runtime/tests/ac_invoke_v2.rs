@@ -73,6 +73,13 @@ fn load_v2_runtime() -> Option<(ExtensionRuntime, tempfile::TempDir)> {
 /// v2-built extension returns `valid=true`. This proves the v2 dispatch
 /// ABI (extension-design@0.3.0 / 6-variant error) resolves and round-trips
 /// a successful `Result::Ok`.
+// `#[ignore]` rather than a bare `return`. Printing "skipping" and returning
+// reports the test as **passed**, in a run indistinguishable from one that
+// actually exercised a real component — so a regression here was invisible to
+// CI while the suite read green. Ignored tests are counted and named instead.
+// The `fixture-tests` workflow builds the pack and runs these with
+// `cargo test -- --ignored`.
+#[ignore = "needs GTDX_TEST_GTXPACK_V2; run via the fixture-tests workflow or `cargo test -- --ignored`"]
 #[test]
 fn invoke_validate_card_v2_success() {
     let Some((rt, _tmp)) = load_v2_runtime() else {
@@ -101,6 +108,7 @@ fn invoke_validate_card_v2_success() {
 /// surface a typed `RuntimeError::Extension(HostExtensionError)` carrying a
 /// stable `.code()` — never collapse into an opaque `Wasmtime` trap. The
 /// v2 6-variant error ABI is what carries this code across the boundary.
+#[ignore = "needs GTDX_TEST_GTXPACK_V2; run via the fixture-tests workflow or `cargo test -- --ignored`"]
 #[test]
 fn invoke_unknown_tool_v2_returns_typed_error() {
     let Some((rt, _tmp)) = load_v2_runtime() else {

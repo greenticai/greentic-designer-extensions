@@ -65,7 +65,10 @@ impl InMemorySecrets {
         Self::default()
     }
 
-    pub fn insert(&mut self, key: &str, value: &str) {
+    /// Takes `&self`: the map is behind a `Mutex`, so exclusive access is
+    /// already enforced at runtime and requiring it statically only forced
+    /// callers into a `mut` binding they had no other use for.
+    pub fn insert(&self, key: &str, value: &str) {
         let mut g = self
             .map
             .lock()
@@ -182,7 +185,7 @@ mod tests {
 
     #[test]
     fn in_memory_secrets_returns_value_when_present() {
-        let mut s = InMemorySecrets::default();
+        let s = InMemorySecrets::default();
         s.insert("api.openai.com/api_key", "sk-test");
         let v = s.get("api.openai.com/api_key").unwrap();
         assert_eq!(v, "sk-test");
