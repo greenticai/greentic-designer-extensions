@@ -1,0 +1,120 @@
+name: Fixture tests (ext-runtime)
+
+# Drop this into a workflow directory in a **private** repo — one that already
+# has access to the fixture repos, e.g. `greentic-biz/greentic-adaptive-card-mcp`
+# itself, or a private CI repo in the same org.
+#
+# Why it does not live in greentic-designer-extensions: that repo is public.
+# Building private source inside a public repo's Actions run puts the build
+# output into publicly-readable logs, and a failing `cargo component build`
+# prints source snippets. The public copy of this workflow therefore skips by
+# default and exists mainly to document the gap; this is the one that should
+# actually run.
+#
+# What it covers: `invoke_tool`, `validate_content`, `list_targets` and
+# `credential_schema` against components that really export the interfaces the
+# runtime calls. Every fixture the ext-runtime suite builds on its own is
+# `(component)`, an empty shell, so without this those four have no coverage.
+#
+# Set `EXT_RUNTIME_REF` to the tag under test. Pin it deliberately rather than
+# tracking a branch: a nightly that silently follows `main` reports on code
+# nobody decided to release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ext-runtime-ref:
+        description: "ext-runtime tag or rev to test"
+        required: false
+        default: v1.3.2
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  EXT_RUNTIME_REF: ${{ inputs.ext-runtime-ref || 'v1.3.2' }}
+
+jobs:
+  fixture-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # Public repo, so no token needed for this one.
+      - name: Checkout ext-runtime
+        uses: actions/checkout@v4
+        with:
+          repository: greenticai/greentic-designer-extensions
+          ref: ${{ env.EXT_RUNTIME_REF }}
+          path: ext-runtime
+
+      # The two below are private. Inside their own org, the default
+      # GITHUB_TOKEN reaches them when this workflow lives in that org and the
+      # repo is granted access; otherwise supply FIXTURE_REPO_TOKEN.
+      - name: Checkout adaptive-card-mcp (design fixture)
+        uses: actions/checkout@v4
+        with:
+          repository: greentic-biz/greentic-adaptive-card-mcp
+          token: ${{ secrets.FIXTURE_REPO_TOKEN || github.token }}
+          path: adaptive-card-mcp
+
+      - name: Checkout deployer-extensions (deploy fixture)
+        uses: actions/checkout@v4
+        with:
+          repository: greentic-biz/greentic-deployer-extensions
+          token: ${{ secrets.FIXTURE_REPO_TOKEN || github.token }}
+          path: deployer-extensions
+
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          targets: wasm32-wasip2
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ext-runtime
+
+      - name: Install cargo-component
+        run: cargo install cargo-component --locked
+
+      - name: Build the adaptive-cards pack
+        run: ./crates/adaptive-card-extension/build.sh
+        working-directory: adaptive-card-mcp
+
+      - name: Build the deploy-aws pack
+        run: ./build.sh
+        working-directory: deployer-extensions/reference-extensions/deploy-aws
+
+      - name: Locate the built packs
+        id: packs
+        # Globbed rather than hard-coded: both filenames carry the extension
+        # version, so pinning them here breaks on every fixture release.
+        run: |
+          set -euo pipefail
+          design=$(find adaptive-card-mcp -name 'greentic.adaptive-cards-*.gtxpack' | head -1)
+          deploy=$(find deployer-extensions/reference-extensions/deploy-aws -name '*.gtxpack' | head -1)
+          for var in design deploy; do
+            if [ -z "${!var}" ]; then
+              echo "::error::no .gtxpack produced for the $var fixture"
+              exit 1
+            fi
+          done
+          echo "design=$PWD/$design" >> "$GITHUB_OUTPUT"
+          echo "deploy=$PWD/$deploy" >> "$GITHUB_OUTPUT"
+
+      - name: Run the fixture tests
+        # `--tests` excludes doctests: several carry ```ignore fences, and
+        # `--ignored` would try to compile them.
+        #
+        # `--skip _v2` leaves out `ac_invoke_v2`'s two tests. They need a pack
+        # built against the v2 contract, which ships unsigned and so also needs
+        # `--features dev-allow-unsigned` plus GREENTIC_EXT_ALLOW_UNSIGNED — a
+        # different build than the signed pack above. Wiring it is the obvious
+        # next step; naming the gap beats pretending the run is complete.
+        run: cargo test --workspace --all-features --tests -- --ignored --skip _v2
+        working-directory: ext-runtime
+        env:
+          GTDX_TEST_GTXPACK: ${{ steps.packs.outputs.design }}
+          GTDX_TEST_DEPLOY_GTXPACK: ${{ steps.packs.outputs.deploy }}

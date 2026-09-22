@@ -261,3 +261,187 @@ fn watcher_path_rejects_a_different_key_for_a_pinned_id() {
         "the rejected reload must not evict the extension already loaded"
     );
 }
+
+/// Uninstalling an extension must actually unload it.
+///
+/// The removal path used to resolve the changed path by looking for a
+/// `describe.json` beside it — which, after an uninstall, is exactly the file
+/// that is gone. The event resolved to `None`, was dropped by an `if let Some`
+/// with no `else`, and the extension stayed loaded and dispatchable with its
+/// capabilities still advertised until the process restarted.
+#[test]
+fn removing_an_extension_directory_unloads_it() {
+    let _guard = EnvGuard::remove("GREENTIC_EXT_ALLOW_UNSIGNED");
+    let (fx, _sk) = signed_fixture(ExtensionKind::Design, "greentic.vanishing", "0.1.0");
+
+    let trust = tempfile::TempDir::new().unwrap();
+    let mut rt = runtime_with_trust_root(trust.path());
+    rt.register_loaded_from_dir(fx.root()).expect("register");
+    assert_eq!(rt.loaded().len(), 1);
+
+    std::fs::remove_dir_all(fx.root()).expect("uninstall");
+    rt.handle_fs_event_for_test(&greentic_ext_runtime::watcher::FsEvent::Removed(
+        fx.root().join("describe.json"),
+    ))
+    .expect("removal event");
+
+    assert!(
+        rt.loaded().is_empty(),
+        "an uninstalled extension must not stay loaded"
+    );
+    assert_eq!(
+        rt.capability_registry().offerings().count(),
+        0,
+        "its capabilities must stop being advertised too"
+    );
+}
+
+/// Deleting one asset out of a pack is not an uninstall: the directory is still
+/// there and the compiled component is already in memory.
+#[test]
+fn removing_one_file_from_a_pack_does_not_unload_it() {
+    let _guard = EnvGuard::remove("GREENTIC_EXT_ALLOW_UNSIGNED");
+    let (fx, _sk) = signed_fixture(ExtensionKind::Design, "greentic.partial", "0.1.0");
+
+    let trust = tempfile::TempDir::new().unwrap();
+    let mut rt = runtime_with_trust_root(trust.path());
+    rt.register_loaded_from_dir(fx.root()).expect("register");
+
+    let victim = fx.root().join("extension.wasm");
+    std::fs::remove_file(&victim).expect("delete one file");
+    rt.handle_fs_event_for_test(&greentic_ext_runtime::watcher::FsEvent::Removed(victim))
+        .expect("removal event");
+
+    assert_eq!(
+        rt.loaded().len(),
+        1,
+        "a partially deleted pack stays loaded; its directory is still there"
+    );
+}
+
+/// A correctly-signed *older* pack must not replace a newer loaded one.
+///
+/// TOFU pins a publisher key, never a version floor, so a downgrade verifies
+/// perfectly — which means anyone who can write the extensions directory, or
+/// replay a stale artifact the publisher really did sign, rolls a patched
+/// extension back to a vulnerable one and the gate applauds.
+#[test]
+fn a_signed_downgrade_is_refused() {
+    let _guard = EnvGuard::remove("GREENTIC_EXT_ALLOW_UNSIGNED");
+    let trust = tempfile::TempDir::new().unwrap();
+    let mut rt = runtime_with_trust_root(trust.path());
+
+    let (newer, sk) = signed_fixture(ExtensionKind::Design, "greentic.rollback", "2.0.0");
+    rt.register_loaded_from_dir(newer.root()).expect("register");
+
+    // Same id, same publisher key, lower version — everything the gate checks
+    // still holds.
+    let older =
+        support::signed_fixture_with_key(ExtensionKind::Design, "greentic.rollback", "1.0.0", &sk);
+    let err = rt
+        .handle_added_or_modified(older.root())
+        .expect_err("an older version must not replace a newer one");
+    assert!(
+        err.to_string().contains("older"),
+        "expected a downgrade refusal, got: {err}"
+    );
+    assert_eq!(
+        rt.loaded()
+            .values()
+            .next()
+            .map(|e| e.describe.metadata.version.clone()),
+        Some("2.0.0".to_string()),
+        "the newer version must still be the loaded one"
+    );
+}
+
+/// `mv`-ing an extension directory aside must unload it.
+///
+/// inotify reports a rename *out of* the watched tree as
+/// `Modify(Name(From))`, not `Remove`. Classified as a modification, the event
+/// resolved to no extension directory and was dropped — so quarantining a
+/// misbehaving extension by moving it, the natural admin reflex, left it
+/// loaded, offering capabilities and dispatchable until restart.
+#[test]
+fn renaming_an_extension_directory_out_of_the_tree_unloads_it() {
+    let _guard = EnvGuard::remove("GREENTIC_EXT_ALLOW_UNSIGNED");
+    let (fx, _sk) = signed_fixture(ExtensionKind::Design, "greentic.quarantined", "0.1.0");
+
+    let trust = tempfile::TempDir::new().unwrap();
+    let mut rt = runtime_with_trust_root(trust.path());
+    rt.register_loaded_from_dir(fx.root()).expect("register");
+    assert_eq!(rt.loaded().len(), 1);
+
+    let elsewhere = tempfile::TempDir::new().unwrap();
+    let moved = elsewhere.path().join("quarantined");
+    std::fs::rename(fx.root(), &moved).expect("mv the extension aside");
+
+    // What the watcher actually delivers for a rename-out.
+    rt.handle_fs_event_for_test(&greentic_ext_runtime::watcher::FsEvent::Removed(
+        fx.root().to_path_buf(),
+    ))
+    .expect("rename-out event");
+
+    assert!(
+        rt.loaded().is_empty(),
+        "an extension moved out of the tree must not stay loaded"
+    );
+}
+
+/// Concurrent mutations of the loaded map must not lose one another.
+///
+/// `ArcSwap` makes each individual store atomic, which is what readers need,
+/// but the mutators clone the map, edit the clone and store it back. Two of
+/// those racing lose an edit — and losing a *removal* leaves an evicted
+/// extension advertising capabilities through `offerings()`, the stale-offering
+/// false positive the wholesale rebuild exists to prevent.
+///
+/// Nothing pinned the serialisation half of that invariant: removing the lock
+/// from `mutate_loaded` left the whole suite green.
+#[test]
+fn concurrent_registrations_and_evictions_do_not_lose_each_other() {
+    use std::sync::Arc;
+
+    let _guard = EnvGuard::remove("GREENTIC_EXT_ALLOW_UNSIGNED");
+    let trust = tempfile::TempDir::new().unwrap();
+
+    // Register a batch up front, then race an eviction of half of them against
+    // registrations of the other half's replacements.
+    let fixtures: Vec<_> = (0..8)
+        .map(|i| {
+            signed_fixture(
+                ExtensionKind::Design,
+                &format!("greentic.racer-{i}"),
+                "1.0.0",
+            )
+        })
+        .collect();
+
+    let mut rt = runtime_with_trust_root(trust.path());
+    for (fx, _sk) in &fixtures {
+        rt.register_loaded_from_dir(fx.root()).expect("register");
+    }
+    assert_eq!(rt.loaded().len(), 8);
+
+    let rt = Arc::new(rt);
+    let mut handles = Vec::new();
+    for (fx, _sk) in &fixtures {
+        let rt = Arc::clone(&rt);
+        let dir = fx.root().to_path_buf();
+        handles.push(std::thread::spawn(move || rt.handle_removal(&dir)));
+    }
+    for h in handles {
+        h.join().expect("no mutator may panic");
+    }
+
+    assert!(
+        rt.loaded().is_empty(),
+        "every concurrent removal must land; {} survived",
+        rt.loaded().len()
+    );
+    assert_eq!(
+        rt.capability_registry().offerings().count(),
+        0,
+        "a lost removal leaves capabilities advertised for an evicted extension"
+    );
+}

@@ -42,7 +42,10 @@ impl CapabilityRegistry {
         let mut resolved = HashMap::new();
         let mut unresolved = Vec::new();
         for req in required {
-            let vr = VersionReq::parse(&req.version).unwrap_or(VersionReq::STAR);
+            let Some(vr) = parse_requirement(&req.id, &req.version) else {
+                unresolved.push(req.clone());
+                continue;
+            };
             let best = self
                 .offerings
                 .get(&req.id)
@@ -71,8 +74,12 @@ impl CapabilityRegistry {
         self.offerings.values().flat_map(|v| v.iter())
     }
 
-    /// Returns extension IDs that participate in a dependency cycle.
-    /// Empty vec if acyclic.
+    /// Returns the extension IDs whose dependency graph reaches a cycle.
+    ///
+    /// This is deliberately "reaches", not "participates in": an extension
+    /// that merely depends on a cyclic pair is just as unresolvable as the pair
+    /// itself, and callers use this list to refuse to activate. Empty vec means
+    /// every listed extension resolves acyclically.
     #[must_use]
     pub fn detect_cycle(&self, extensions: &[(String, Vec<CapabilityRef>)]) -> Vec<String> {
         let ext_map: HashMap<&str, &Vec<CapabilityRef>> = extensions
@@ -104,7 +111,12 @@ impl CapabilityRegistry {
             return false;
         };
         for req in *reqs {
-            let vr = VersionReq::parse(&req.version).unwrap_or(VersionReq::STAR);
+            // A requirement that does not parse resolves to nothing (see
+            // `parse_requirement`), so it can introduce no edge and therefore
+            // no cycle.
+            let Some(vr) = parse_requirement(&req.id, &req.version) else {
+                continue;
+            };
             let Some(offers) = self.offerings.get(&req.id) else {
                 continue;
             };
@@ -116,5 +128,28 @@ impl CapabilityRegistry {
         }
         visited.remove(ext_id);
         false
+    }
+}
+
+/// Parse a capability version requirement, or reject it.
+///
+/// A malformed requirement previously fell back to [`VersionReq::STAR`], which
+/// silently turned "I need exactly this" into "anything will do" — the widest
+/// possible resolution from the narrowest possible input, and the resolver
+/// would then hand back a binding the extension never asked for. Failing the
+/// requirement instead surfaces it as unresolved, which is the outcome an
+/// undeclarable dependency should have.
+fn parse_requirement(cap_id: &CapabilityId, raw: &str) -> Option<VersionReq> {
+    match VersionReq::parse(raw) {
+        Ok(vr) => Some(vr),
+        Err(e) => {
+            tracing::warn!(
+                capability = ?cap_id,
+                requirement = %raw,
+                error = %e,
+                "unparseable capability version requirement; treating it as unresolvable"
+            );
+            None
+        }
     }
 }

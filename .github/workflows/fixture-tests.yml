@@ -1,0 +1,169 @@
+name: Fixture tests
+
+# Dispatch runs against real extension components.
+#
+# The rest of the suite never instantiates a real WASM extension — every
+# fixture it builds is `(component)`, an empty shell. So `invoke_tool`,
+# `validate_content`, `list_targets` and `credential_schema` had no coverage
+# at all against a component that actually exports the interfaces they call.
+# The tests for that path exist; they were `#[ignore]`d because the packs come
+# from two other repos.
+#
+# Not on `pull_request`: both fixture repos are private, so this needs a
+# cross-repo token, and a job that is red on every PR for a missing secret
+# teaches people to ignore red. Nightly plus on-demand gives the signal
+# without that.
+#
+# ⚠ THIS REPO IS PUBLIC, AND THE TWO FIXTURE REPOS ARE PRIVATE.
+#
+# On a public repo, Actions logs and artifacts are readable by anyone. This
+# lane clones and compiles private source, and a failing `cargo component
+# build` prints source snippets — so a broken fixture build would publish
+# private code. That is not configurable away from inside a public repo.
+#
+# The copy that should actually run lives in `ci/private-lane/` and belongs in
+# a private repo. This one stays to document the gap, and skips by default:
+# without `FIXTURE_REPO_TOKEN` it is inert. Dispatch it only if you have
+# weighed the log exposure.
+#
+# Requires a `FIXTURE_REPO_TOKEN` secret: a PAT with `contents: read` on
+# `greentic-biz/greentic-adaptive-card-mcp` and
+# `greentic-biz/greentic-deployer-extensions`.
+#
+# Until that secret exists a scheduled run skips with a notice rather than
+# failing — see the `preflight` job for why the two triggers differ. **A green
+# run is therefore not by itself evidence the fixture tests ran**; check the
+# job summary, which says plainly when it skipped.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 03:17 UTC — off the hour, so it does not pile onto the runner peak.
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Whether the run can proceed at all, decided before any expensive step.
+  #
+  # The token is checked here rather than inline because `secrets` are not
+  # available in a job-level `if:`, and because the *response* to a missing
+  # token differs by trigger:
+  #
+  # - `workflow_dispatch` — somebody asked for this run. Fail loudly; quietly
+  #   doing nothing when a person pressed the button is worse than an error.
+  # - `schedule` — nobody asked. Skip with a notice. A nightly that is red
+  #   every night until a secret is provisioned trains people to ignore this
+  #   workflow, so when it eventually goes red for a real reason nobody looks.
+  #   That is the same failure this lane exists to fix, one level up.
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      have-token: ${{ steps.check.outputs.have-token }}
+    steps:
+      - id: check
+        env:
+          FIXTURE_REPO_TOKEN: ${{ secrets.FIXTURE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${FIXTURE_REPO_TOKEN:-}" ]; then
+            echo "have-token=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "have-token=false" >> "$GITHUB_OUTPUT"
+          msg="FIXTURE_REPO_TOKEN is not set. This workflow builds extension packs from two private repos; it cannot run without a PAT that can read them."
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "::notice::${msg} Skipping the scheduled run."
+            echo "### Fixture tests skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "\`FIXTURE_REPO_TOKEN\` is not configured, so the packs cannot be built." >> "$GITHUB_STEP_SUMMARY"
+            echo "Real-WASM dispatch (\`invoke_tool\`, \`validate_content\`, \`list_targets\`, \`credential_schema\`) is **not** covered until it is." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "::error::${msg}"
+          exit 1
+
+  fixture-tests:
+    needs: preflight
+    if: needs.preflight.outputs.have-token == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout ext-runtime
+        uses: actions/checkout@v4
+        with:
+          path: ext-runtime
+
+      - name: Checkout adaptive-card-mcp (design fixture)
+        uses: actions/checkout@v4
+        with:
+          repository: greentic-biz/greentic-adaptive-card-mcp
+          token: ${{ secrets.FIXTURE_REPO_TOKEN }}
+          path: adaptive-card-mcp
+
+      - name: Checkout deployer-extensions (deploy fixture)
+        uses: actions/checkout@v4
+        with:
+          repository: greentic-biz/greentic-deployer-extensions
+          token: ${{ secrets.FIXTURE_REPO_TOKEN }}
+          path: deployer-extensions
+
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          targets: wasm32-wasip2
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ext-runtime
+
+      - name: Install cargo-component
+        # Both fixture build scripts drive `cargo component build`.
+        run: cargo install cargo-component --locked
+
+      - name: Build the adaptive-cards pack
+        run: ./crates/adaptive-card-extension/build.sh
+        working-directory: adaptive-card-mcp
+
+      - name: Build the deploy-aws pack
+        run: ./build.sh
+        working-directory: deployer-extensions/reference-extensions/deploy-aws
+
+      - name: Locate the built packs
+        id: packs
+        # Globbed rather than hard-coded: both filenames carry the extension
+        # version, so pinning them here would break on every fixture release.
+        run: |
+          set -euo pipefail
+          design=$(find adaptive-card-mcp -name 'greentic.adaptive-cards-*.gtxpack' | head -1)
+          deploy=$(find deployer-extensions/reference-extensions/deploy-aws -name '*.gtxpack' | head -1)
+          for var in design deploy; do
+            if [ -z "${!var}" ]; then
+              echo "::error::no .gtxpack produced for the $var fixture"
+              exit 1
+            fi
+          done
+          echo "design=$PWD/$design" >> "$GITHUB_OUTPUT"
+          echo "deploy=$PWD/$deploy" >> "$GITHUB_OUTPUT"
+
+      - name: Run the fixture tests
+        # `--tests` excludes doctests: several carry ```ignore fences, and
+        # `--ignored` would try to compile them.
+        #
+        # `--skip _v2` leaves out `ac_invoke_v2`'s two tests. They need a pack
+        # built against the v2 contract, which ships unsigned and so also needs
+        # `--features dev-allow-unsigned` plus GREENTIC_EXT_ALLOW_UNSIGNED — a
+        # different build than the signed pack above, and one this workflow does
+        # not know how to produce. Wiring it is the obvious next step; naming the
+        # gap here beats pretending the run is complete.
+        run: |
+          cargo test --workspace --all-features --tests -- --ignored --skip _v2
+        working-directory: ext-runtime
+        env:
+          GTDX_TEST_GTXPACK: ${{ steps.packs.outputs.design }}
+          GTDX_TEST_DEPLOY_GTXPACK: ${{ steps.packs.outputs.deploy }}

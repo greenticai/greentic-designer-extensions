@@ -152,6 +152,34 @@ pub fn finalize_signed_with_manifest(
     .unwrap();
 }
 
+/// Like [`signed_fixture`] but signs with a caller-supplied key.
+///
+/// Needed wherever a test has to produce a second pack that the trust store
+/// will accept for an id already pinned — a downgrade, say. A fresh key would
+/// be rejected as `PublisherKeyChanged` long before the case under test.
+pub fn signed_fixture_with_key(
+    kind: greentic_extension_sdk_contract::ExtensionKind,
+    id: &str,
+    version: &str,
+    sk: &ed25519_dalek::SigningKey,
+) -> greentic_extension_sdk_testing::ExtensionFixture {
+    let minimal_wasm = wat::parse_str(r"(component)").expect("wat component must compile");
+    let fixture = greentic_extension_sdk_testing::ExtensionFixtureBuilder::new(kind, id, version)
+        .offer("greentic:test/ping", "1.0.0")
+        .with_wasm(minimal_wasm)
+        .build()
+        .expect("fixture build");
+
+    let describe_path = fixture.root().join("describe.json");
+    let raw = std::fs::read_to_string(&describe_path).unwrap();
+    let mut describe: greentic_extension_sdk_contract::DescribeJson =
+        serde_json::from_str(&raw).unwrap();
+    populate_gtpack_for_local_load(&mut describe);
+    finalize_signed_with_manifest(fixture.root(), &mut describe, sk);
+
+    fixture
+}
+
 /// Build a signed extension fixture using the `ExtensionFixtureBuilder`
 /// from `greentic-extension-sdk-testing`, then sign its describe.json with a fresh
 /// ed25519 key. Returns the fixture and the signing key used.

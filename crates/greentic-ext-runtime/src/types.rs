@@ -1,3 +1,60 @@
+/// Host-side declaration of a UI view an extension contributes to a host
+/// surface (Designer sidebar, Admin tenant detail panel, etc).
+///
+/// Mirrors `greentic_extension_sdk_contract::describe::contributions::View`
+/// field-for-field — `surface`, `placement`, and `min_visibility` are that
+/// crate's own types reused directly rather than re-mirrored, the same way
+/// [`ToolDefinition::secret_requirements`] reuses `greentic_types` directly;
+/// there is no WIT-bindgen type here to keep out of the public API, so
+/// duplicating them would only be extra upkeep. Two fields have no contract
+/// equivalent because they depend on where this extension actually landed on
+/// disk:
+///
+/// - `asset_dir`: `<source_dir>/assets/views/<id>/`, the directory the whole
+///   view bundle (entry HTML plus its JS/CSS/images) lives under. A host
+///   serving the view as a static page needs this to serve every relative
+///   resource the entry references, not just the entry file itself.
+/// - `entry_path`: `asset_dir` joined with `entry`, resolved and checked for
+///   path traversal here (the same discipline
+///   [`crate::runtime_verify::pack_relative_path`] applies to
+///   `gtpack.file`) rather than left for every host to re-derive — and,
+///   more importantly, to re-remember the `..`-rejection. `entry` is a
+///   publisher-controlled string from a signed `describe.json`; resolving it
+///   once in the loader means every host gets the same guard.
+///
+/// Both fields are kept because they answer different questions: `entry_path`
+/// is what a host opens first, `asset_dir` is the root it serves everything
+/// else from.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ViewDefinition {
+    /// Unique within the extension. The host namespaces it as
+    /// `<extension_id>/<id>`.
+    pub id: String,
+    pub surface: greentic_extension_sdk_contract::describe::contributions::Surface,
+    /// Key resolved against the top-level `localization` block.
+    pub title_key: String,
+    /// Literal shown when `title_key` has no entry for the active locale.
+    pub title_fallback: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// Entry HTML, relative to `asset_dir` inside the pack. See
+    /// [`Self::entry_path`] for the resolved, path-safety-checked form.
+    pub entry: String,
+    pub placement: greentic_extension_sdk_contract::describe::contributions::Placement,
+    #[serde(default)]
+    pub min_visibility: greentic_extension_sdk_contract::describe::contributions::Visibility,
+    /// Names of this extension's own contributed tools the view may invoke
+    /// through the host bridge.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
+    /// `<source_dir>/assets/views/<id>/` — the directory this view's whole
+    /// asset bundle lives under.
+    pub asset_dir: std::path::PathBuf,
+    /// `asset_dir` joined with `entry`, resolved and checked against path
+    /// traversal.
+    pub entry_path: std::path::PathBuf,
+}
+
 /// Host-side mirror of WIT `greentic:extension-design/tools@0.2.0::tool-definition`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolDefinition {
@@ -85,14 +142,36 @@ pub struct TargetSummary {
 ///
 /// Note: no `serde` derives — `artifact_bytes` is a raw binary blob handed
 /// to the WASM guest verbatim; JSON-encoding it would be wasteful and
-/// incorrect.
-#[derive(Debug, Clone)]
+/// incorrect. No derived `Debug` either: see the manual impl below.
+#[derive(Clone)]
 pub struct DeployRequest {
     pub target_id: String,
     pub artifact_bytes: Vec<u8>,
     pub credentials_json: String,
     pub config_json: String,
     pub deployment_name: String,
+}
+
+impl std::fmt::Debug for DeployRequest {
+    /// Redacts `credentials_json` and elides `artifact_bytes`.
+    ///
+    /// `credentials_json` is the cloud credential the deploy target needs —
+    /// AWS keys, GitHub tokens, registry passwords. A derived `Debug` put all
+    /// of it into any `{:?}` of the request, which the wizard's deploy step is
+    /// exactly the kind of code to log on failure. `artifact_bytes` is elided
+    /// for a duller reason: it is megabytes of zip.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeployRequest")
+            .field("target_id", &self.target_id)
+            .field(
+                "artifact_bytes",
+                &format_args!("<{} bytes>", self.artifact_bytes.len()),
+            )
+            .field("credentials_json", &"<redacted>")
+            .field("config_json", &self.config_json)
+            .field("deployment_name", &self.deployment_name)
+            .finish()
+    }
 }
 
 /// Host-side mirror of WIT `greentic:extension-deploy/deployment@0.1.0::deploy-status`.
@@ -326,5 +405,31 @@ mod target_summary_tests {
         let back: TargetSummary = serde_json::from_str(&json).unwrap();
         assert_eq!(back.id, t.id);
         assert!(back.supports_rollback);
+    }
+}
+
+#[cfg(test)]
+mod deploy_request_tests {
+    use super::DeployRequest;
+
+    #[test]
+    fn debug_never_renders_deploy_credentials() {
+        let req = DeployRequest {
+            target_id: "aws-ecs".into(),
+            artifact_bytes: vec![0u8; 4096],
+            credentials_json: r#"{"aws_secret_access_key":"AKIAsupersecret"}"#.into(),
+            config_json: r#"{"region":"eu-west-1"}"#.into(),
+            deployment_name: "demo".into(),
+        };
+        let rendered = format!("{req:?}");
+        assert!(
+            !rendered.contains("AKIAsupersecret"),
+            "deploy credentials must never reach a log: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+        // Non-secret fields stay legible, and the blob is summarised not dumped.
+        assert!(rendered.contains("aws-ecs"), "{rendered}");
+        assert!(rendered.contains("eu-west-1"), "{rendered}");
+        assert!(rendered.contains("<4096 bytes>"), "{rendered}");
     }
 }

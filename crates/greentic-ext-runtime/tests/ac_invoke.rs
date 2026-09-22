@@ -11,6 +11,13 @@ use std::path::PathBuf;
 
 use greentic_ext_runtime::{DiscoveryPaths, ExtensionRuntime, RuntimeConfig};
 
+// `#[ignore]` rather than a bare `return`. Printing "skipping" and returning
+// reports the test as **passed**, in a run indistinguishable from one that
+// actually exercised a real component — so a regression in `invoke_tool`
+// against real WASM was invisible to CI while the suite read green. Ignored
+// tests are counted and named in the summary. Run them with
+// `cargo test -- --ignored` once the fixture is built.
+#[ignore = "needs GTDX_TEST_GTXPACK; see the module docs to build the fixture"]
 #[test]
 fn invoke_validate_card_on_ac_extension() {
     let Ok(raw) = std::env::var("GTDX_TEST_GTXPACK") else {
@@ -23,16 +30,14 @@ fn invoke_validate_card_on_ac_extension() {
         eprintln!(
             "     export GTDX_TEST_GTXPACK=$(pwd)/crates/adaptive-card-extension/greentic.adaptive-cards-1.6.0.gtxpack"
         );
-        return;
+        panic!("GTDX_TEST_GTXPACK is not set");
     };
     let pack = PathBuf::from(raw);
-    if !pack.exists() {
-        eprintln!(
-            "skipping: GTDX_TEST_GTXPACK points to non-existent file: {}",
-            pack.display()
-        );
-        return;
-    }
+    assert!(
+        pack.exists(),
+        "GTDX_TEST_GTXPACK points to a non-existent file: {}",
+        pack.display()
+    );
 
     let tmp = tempfile::TempDir::new().unwrap();
     let ext_dir = tmp.path().join("ext");

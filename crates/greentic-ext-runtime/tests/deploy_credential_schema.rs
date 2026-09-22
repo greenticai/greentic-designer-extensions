@@ -8,16 +8,15 @@ use std::path::PathBuf;
 
 use greentic_ext_runtime::{DiscoveryPaths, ExtensionRuntime, RuntimeConfig};
 
-fn load_rt_from_pack() -> Option<(tempfile::TempDir, ExtensionRuntime, String)> {
-    let raw = std::env::var("GTDX_TEST_DEPLOY_GTXPACK").ok()?;
+fn load_rt_from_pack() -> (tempfile::TempDir, ExtensionRuntime, String) {
+    let raw =
+        std::env::var("GTDX_TEST_DEPLOY_GTXPACK").expect("GTDX_TEST_DEPLOY_GTXPACK is not set");
     let pack = PathBuf::from(&raw);
-    if !pack.exists() {
-        eprintln!(
-            "skipping: GTDX_TEST_DEPLOY_GTXPACK points to non-existent file: {}",
-            pack.display()
-        );
-        return None;
-    }
+    assert!(
+        pack.exists(),
+        "GTDX_TEST_DEPLOY_GTXPACK points to a non-existent file: {}",
+        pack.display()
+    );
 
     let tmp = tempfile::TempDir::new().unwrap();
     let ext_dir = tmp.path().join("ext");
@@ -37,16 +36,19 @@ fn load_rt_from_pack() -> Option<(tempfile::TempDir, ExtensionRuntime, String)> 
         .next()
         .map(|k| k.as_str().to_string())
         .expect("at least one extension loaded");
-
-    Some((tmp, rt, id))
+    (tmp, rt, id)
 }
 
+// `#[ignore]` rather than a bare `return`. Printing "skipping" and returning
+// reports the test as **passed**, in a run indistinguishable from one that
+// actually exercised a real component — so a regression here was invisible to
+// CI while the suite read green. Ignored tests are counted and named instead.
+// The `fixture-tests` workflow builds the pack and runs these with
+// `cargo test -- --ignored`.
+#[ignore = "needs GTDX_TEST_DEPLOY_GTXPACK; run via the fixture-tests workflow or `cargo test -- --ignored`"]
 #[test]
 fn list_targets_returns_non_empty_for_deploy_extension() {
-    let Some((_tmp, rt, id)) = load_rt_from_pack() else {
-        eprintln!("skipping: GTDX_TEST_DEPLOY_GTXPACK not set.");
-        return;
-    };
+    let (_tmp, rt, id) = load_rt_from_pack();
     let targets = rt.list_targets(&id).expect("list_targets should succeed");
     assert!(!targets.is_empty(), "expected at least one target");
     let first = &targets[0];
@@ -54,12 +56,10 @@ fn list_targets_returns_non_empty_for_deploy_extension() {
     assert!(!first.display_name.is_empty());
 }
 
+#[ignore = "needs GTDX_TEST_DEPLOY_GTXPACK; run via the fixture-tests workflow or `cargo test -- --ignored`"]
 #[test]
 fn credential_schema_returns_valid_json_schema() {
-    let Some((_tmp, rt, id)) = load_rt_from_pack() else {
-        eprintln!("skipping: GTDX_TEST_DEPLOY_GTXPACK not set.");
-        return;
-    };
+    let (_tmp, rt, id) = load_rt_from_pack();
     let targets = rt.list_targets(&id).unwrap();
     let target_id = &targets[0].id;
     let schema = rt
@@ -74,12 +74,10 @@ fn credential_schema_returns_valid_json_schema() {
     );
 }
 
+#[ignore = "needs GTDX_TEST_DEPLOY_GTXPACK; run via the fixture-tests workflow or `cargo test -- --ignored`"]
 #[test]
 fn validate_credentials_returns_diagnostics_slice() {
-    let Some((_tmp, rt, id)) = load_rt_from_pack() else {
-        eprintln!("skipping: GTDX_TEST_DEPLOY_GTXPACK not set.");
-        return;
-    };
+    let (_tmp, rt, id) = load_rt_from_pack();
     let targets = rt.list_targets(&id).unwrap();
     let target_id = &targets[0].id;
     // Empty JSON object is a valid shape; diagnostics may or may not be empty
@@ -96,12 +94,10 @@ fn validate_credentials_returns_diagnostics_slice() {
     }
 }
 
+#[ignore = "needs GTDX_TEST_DEPLOY_GTXPACK; run via the fixture-tests workflow or `cargo test -- --ignored`"]
 #[test]
 fn deploy_on_mode_a_extension_surfaces_typed_internal_error() {
-    let Some((_tmp, rt, id)) = load_rt_from_pack() else {
-        eprintln!("skipping: GTDX_TEST_DEPLOY_GTXPACK not set.");
-        return;
-    };
+    let (_tmp, rt, id) = load_rt_from_pack();
     let req = greentic_ext_runtime::DeployRequest {
         target_id: "anything".into(),
         artifact_bytes: vec![],

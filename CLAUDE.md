@@ -50,8 +50,10 @@ in their own GitHub orgs and consume this runtime via crates.io
 
 `greentic-ext-runtime` exposes (see `crates/greentic-ext-runtime/src/lib.rs`):
 
-- `ExtensionRuntime::new(config)` — load + verify signed extensions
-  from `~/.greentic/extensions/{design,deploy,bundle,provider}/`.
+- `ExtensionRuntime::new(config)` — build the wasmtime engine. It loads
+  **nothing**: the returned runtime has an empty extension map, and
+  registration is the embedder's job via `register_loaded_from_dir`
+  (which is where the verify gate runs) or `start_watcher`.
 - `register_loaded_from_dir(path)` — explicit registration; designer
   calls this for design + deploy + bundle dirs at startup. Bundle
   registration is required for `render_bundle()` to find the
@@ -91,7 +93,9 @@ broker + logging + i18n imports).
   `ci/local_check.sh`.
 - **Feature branches + PRs** — never push directly to `main`.
 - **Tag releases** — `v0.X.Y` workspace tags + `<crate>-vX.Y.Z` per-
-  crate tags. Designer pins to the workspace tag.
+  crate tags. See "How consumers actually pin" below — it is not the
+  workspace tag, and getting this wrong makes a release look adopted
+  when nothing has moved.
 
 ## Adding a new world / interface
 
@@ -101,20 +105,59 @@ broker + logging + i18n imports).
    `wasmtime::component::bindgen!({ path: "wit", world: "..." })`.
 3. Mirror the WIT records as Rust structs in `types.rs`; re-export
    from `lib.rs`.
-4. Implement the entry point in `runtime.rs` (own `impl ExtensionRuntime`
-   block to keep file sections small) — resolve the loaded extension,
-   walk the `get_export_index` chain, call the typed function, map
-   the WIT-level error into `RuntimeError::Wasmtime`.
-5. Add a smoke test in the matching `#[cfg(test)]` module that
-   exercises the `RuntimeError::NotFound` path against a tempdir.
+4. Add a `runtime_<kind>.rs` sibling carrying its own
+   `impl ExtensionRuntime` block. Open with
+   `self.dispatch_instance(ext_id)?`, resolve the interface with
+   `resolve_iface_versions`, the function with `resolve_func`, call the
+   typed signature, and map the WIT-level error through
+   `ext_error::from_*` into `RuntimeError::Extension` — never collapse
+   it into `Wasmtime`, which erases the extension's own error code.
+5. Register the module in `lib.rs` and add a smoke test in its
+   `#[cfg(test)]` module that exercises the `RuntimeError::NotFound`
+   path via `ExtensionRuntime::for_test()`.
 
-The existing bundle path (`render_bundle`) is the most recent
-example to mirror.
+`runtime_bundle.rs` is the smallest complete example to mirror.
+
+### Module layout
+
+`runtime.rs` holds only the core: the `ExtensionRuntime` handle and its
+stores, the shared `dispatch_instance` / `lookup` / `mutate_loaded` /
+`resolve_iface_versions` / `resolve_func` plumbing, and the per-family
+version tables. Everything else is a sibling with its own
+`impl ExtensionRuntime` block:
+
+| Module | Surface |
+| --- | --- |
+| `runtime_config` | `RuntimeConfig` — the knobs a host sets |
+| `runtime_verify` | the load gate (signature, ledger, TOFU anchor) |
+| `runtime_registry` | registration, `rebuild_registry`, the fs watcher |
+| `runtime_design` | `tools`, `validation`, `guardrail` |
+| `runtime_knowledge` | `prompting`, `knowledge` |
+| `runtime_roles` | `roles` |
+| `runtime_deploy` | `deployment` |
+| `runtime_targets` | `targets` |
+| `runtime_bundle` | `bundling.render` |
+| `runtime_dw_composer` | `composer` |
+
+`host_state.rs` is split the same way: the state and its builder there,
+the `Host` impls in `host_state_ports` (logging / i18n / secrets /
+broker), `host_state_net` (http / llm), and `host_state_oauth`.
+`net_permissions` resolves an extension's URL allow-list — **intersecting**
+the declared patterns with the operator's, when the operator set one, so a
+self-signed pack cannot self-grant network reach past the host's ceiling —
+`http_scheme_policy` decides which `http://` patterns are honourable at all,
+and `limits` carries the per-store execution ceilings.
+
+**Every mutation of `loaded` goes through `ExtensionRuntime::mutate_loaded`.**
+It holds the write lock across the read-modify-write and stores the map
+together with a registry rebuilt from it, so no caller can drop a
+concurrent edit or leave the two out of step. A new mutation path that
+clones and stores by hand reintroduces both bugs at once.
 
 ## External tool integration
 
-- **`greentic-designer`** — primary consumer. Pins this crate via
-  git tag (`v0.12.0+` for bundle dispatch).
+- **`greentic-designer`** — primary consumer. Pins this crate by **git
+  rev**, not by tag (see below).
 - **`greentic-bundle-extensions`** — bundles the
   `bundle-standard` reference recipe + the OSS-side dispatcher stub
   (`greentic-bundle-extension-host::dispatcher::invoke_recipe`
@@ -126,9 +169,49 @@ example to mirror.
   artefacts. The runtime's verify chain (`verify_dir_signature`)
   checks the describe signature for self-consistency, that the
   describe is bound to the whole-archive `manifest.json`
-  (`manifestSha256`), and that every manifest entry hash-matches —
-  failing closed on a missing manifest (audit P5). It then anchors
-  the signature (see below).
+  (`manifestSha256`), and that the directory and the ledger cover each
+  other exactly — failing closed on a missing manifest (audit P5). It
+  then anchors the signature (see below).
+
+## How consumers actually pin
+
+Neither consumer pins the workspace tag, and they do not agree with each
+other. Verified against their committed manifests and lockfiles:
+
+| Consumer | Spec | Source |
+| --- | --- | --- |
+| `greentic-designer` | `rev = "8bc7713…"` | git |
+| `greentic-runner` — `greentic-aw-runtime` | `"=1.2.24"` | **crates.io** |
+| `greentic-runner` — `greentic-runner-host` | `"=1.2.24"` (optional) | **crates.io** |
+
+`greentic-ext-runtime` **is** on crates.io (1.2.24–1.2.27, plus some
+CI-generated timestamp versions) even though this crate carries
+`publish = false` and this repo has no publish workflow — those releases
+came from somewhere else. Nothing from 1.2.28 on has ever been
+published, this line's tags included.
+
+That combination is why the designer builds today, and it is fragile.
+Its lockfile holds exactly **one** `greentic-ext-runtime`, from the git
+rev, shared by all three consumers — and that unification works only
+because the rev's workspace version happens to be exactly `1.2.24`, the
+version the two runner crates require with `=`. Bump the rev to a
+different version and the `=1.2.24` requirement can no longer be met by
+it, so Cargo pulls a second copy from crates.io. Two copies means two
+distinct `ExtensionRuntime` types and a build that fails on type
+mismatch, which is what the designer's own Cargo.toml comment warns
+about.
+
+So a version bump here is a **three-repo, lockstep change**, not a tag
+push:
+
+1. `greentic-runner` — move both `=1.2.24` requirements, and add the
+   `[patch.crates-io]` redirect its root `Cargo.toml` still has a
+   dangling comment for (the comment ends mid-sentence at "onto the
+   git"; the section itself is gone).
+2. `greentic-designer` — the patch has to live here too. `[patch]` is
+   honoured only from the *root* workspace of a build, so the runner's
+   own patch does nothing when the runner is consumed as a dependency.
+3. Land them together.
 
 ## Signature anchoring (TOFU)
 
@@ -137,7 +220,21 @@ example to mirror.
 1. `verify_describe_self_consistent` — **describe integrity**. Any key
    passes; this only proves the describe is unchanged since signing.
 2. `verify_dir_manifest` — **artifact integrity**: the describe is bound
-   to the whole-archive ledger and every listed file hash-matches.
+   to the whole-archive ledger, and the ledger and the directory cover
+   each other exactly. Four rules, all fail-closed:
+   - every listed file must hash to its recorded sha256;
+   - every file **on disk** must be listed (`describe.json` and
+     `manifest.json` excepted — they are covered by steps 1 and 2
+     themselves). Without this the directory gate was strictly weaker
+     than the archive gate it stands in for, and since
+     `wasm_component_path` prefers a root `extension.wasm`
+     unconditionally, dropping one into a gtpack-layout pack bought
+     arbitrary code execution with every other check still passing;
+   - ledger paths must be plain relative paths — an absolute path makes
+     `Path::join` discard the pack root, and `..` walks out of it;
+   - a ledger entry must be a regular file, checked with
+     `symlink_metadata` so a symlink is rejected rather than followed to
+     bytes that live outside the pack.
 3. `TrustStore::pin_or_verify` — **the anchor**, and the only step that
    supplies authenticity. Trust-on-first-use: the publisher key is
    pinned per `extension.id` on first load, and every later load of that
@@ -180,7 +277,57 @@ developers publishing one extension from their own local keys will
 collide.
 
 `GREENTIC_EXT_ALLOW_UNSIGNED=1` (only under the `dev-allow-unsigned`
-feature) still skips all three steps.
+feature) still skips all three steps. Because that feature also decides
+whether the bypass is compiled at all, `ci/local_check.sh` runs the test
+suite in **both** feature shapes — an all-features-only run never
+exercises the production build's lack of a bypass.
+
+## Real-component test coverage
+
+Every fixture the normal suite builds is `(component)` — an empty shell. So
+`invoke_tool`, `validate_content`, `list_targets` and `credential_schema` are
+never exercised against a component that actually exports the interfaces they
+call. The tests for that path exist but are `#[ignore]`d, because the packs
+come from two private repos.
+
+They run in the `fixture-tests` workflow (nightly + `workflow_dispatch`),
+which builds the packs and calls `cargo test --tests -- --ignored`. It needs a
+`FIXTURE_REPO_TOKEN` secret with read access to
+`greentic-adaptive-card-mcp` and `greentic-deployer-extensions`.
+
+**This repo is public and both fixture repos are private**, so running that
+lane here would put private source into publicly-readable build logs. The copy
+meant to actually run lives in `ci/private-lane/` and belongs in a private
+repo; the one in `.github/workflows/` documents the gap and stays inert.
+
+Without that secret a scheduled run **skips** with a notice, while a manual
+dispatch **fails** — somebody pressed the button, so quietly doing nothing
+would be the wrong answer. A green scheduled run is therefore not by itself
+evidence the fixture tests ran; the job summary says when it skipped. A nightly
+that is red every night until a secret is provisioned is how a workflow gets
+ignored, which is the same failure this lane exists to fix.
+
+**Never turn one of these back into a bare `return`.** They used to print
+"skipping" and return, which reports the test as *passed* — a run with no
+fixture was indistinguishable from one that exercised a real component, and
+CI counted it green. `#[ignore]` is counted and named in the summary instead,
+and a missing or unset fixture path now fails loudly, because running an
+ignored test is always deliberate.
+
+Still uncovered: `ac_invoke_v2`'s two tests need a pack built against the v2
+contract, which ships unsigned and so also needs `--features
+dev-allow-unsigned`; the workflow skips them by name rather than pretending.
+`render_bundle`, `knowledge_*` and `evaluate_guardrail` have no
+behavioural coverage at all — their tests assert `NotFound` and nothing else.
+
+## Execution limits
+
+Every dispatch store gets a memory/table ceiling and, by default, a
+wall-clock deadline (`RuntimeConfig::dispatch_timeout`, 5 minutes; see
+`limits.rs`). The deadline needs `Config::epoch_interruption` on the
+engine plus the `EpochTicker` the runtime holds for its lifetime — if a
+future change constructs an `Engine` without both, deadlines silently
+stop firing.
 
 ## Capability registry
 

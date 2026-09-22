@@ -1,13 +1,11 @@
 //! `deployment` interface dispatch for deploy extensions (Mode B).
 //!
-//! Mirrors the export-walking pattern of the `targets` callers in
-//! [`crate::runtime`] but lives in its own module to keep `runtime.rs`
-//! under the workspace 500-line cap. First consumer: the designer's
-//! wizard deploy step driving `greentic.deploy-github`.
+//! Sibling of [`crate::runtime_targets`], which carries the `targets` surface
+//! of the same world. First consumer: the designer's wizard deploy step
+//! driving `greentic.deploy-github`.
 
 use crate::error::RuntimeError;
-use crate::loaded::ExtensionId;
-use crate::runtime::ExtensionRuntime;
+use crate::runtime::{DEPLOY_VERSIONS, ExtensionRuntime, resolve_func, resolve_iface_versions};
 use crate::types::{DeployExtensionError, DeployJob, DeployRequest, DeployStatus};
 
 use crate::host_bindings::deploy::exports::greentic::extension_deploy0_1_0::deployment::{
@@ -20,7 +18,16 @@ use crate::host_bindings::deploy_v02::exports::greentic::extension_deploy0_2_0::
 };
 use crate::host_bindings::deploy_v02::greentic::extension_base0_2_0::types::ExtensionError as WitExtensionErrorV2;
 
-const BASE_IFACE: &str = "greentic:extension-deploy/deployment";
+const DEPLOYMENT_IFACE: &str = "greentic:extension-deploy/deployment";
+
+/// A resolved `deployment` call site: an open store + instance, the export
+/// index of the requested function, and the interface version that matched.
+struct DeploymentCall {
+    store: wasmtime::Store<crate::host_state::HostState>,
+    instance: wasmtime::component::Instance,
+    func_idx: wasmtime::component::ComponentExportIndex,
+    version: &'static str,
+}
 
 impl ExtensionRuntime {
     /// Start a deployment inside the extension. Returns the initial job.
@@ -32,9 +39,13 @@ impl ExtensionRuntime {
     /// to ~2 minutes for network-bound extensions (artifact upload); run it
     /// on a blocking thread.
     pub fn deploy(&self, ext_id: &str, req: DeployRequest) -> Result<DeployJob, RuntimeError> {
-        let (mut store, instance) = self.deploy_instance(ext_id)?;
-        let (iface_idx, version) = resolve_deployment_iface(&mut store, &instance)?;
-        let func_idx = resolve_func(&mut store, &instance, &iface_idx, "deploy")?;
+        let DeploymentCall {
+            mut store,
+            instance,
+            func_idx,
+            version,
+        } = self.deployment_call(ext_id, "deploy")?;
+
         if version == "0.2.0" {
             let func = instance
                 .get_typed_func::<(WitDeployRequestV2,), (Result<WitDeployJobV2, WitExtensionErrorV2>,)>(
@@ -78,9 +89,13 @@ impl ExtensionRuntime {
 
     /// Poll a previously started deployment job.
     pub fn deploy_poll(&self, ext_id: &str, job_id: &str) -> Result<DeployJob, RuntimeError> {
-        let (mut store, instance) = self.deploy_instance(ext_id)?;
-        let (iface_idx, version) = resolve_deployment_iface(&mut store, &instance)?;
-        let func_idx = resolve_func(&mut store, &instance, &iface_idx, "poll")?;
+        let DeploymentCall {
+            mut store,
+            instance,
+            func_idx,
+            version,
+        } = self.deployment_call(ext_id, "poll")?;
+
         if version == "0.2.0" {
             let func = instance
                 .get_typed_func::<(String,), (Result<WitDeployJobV2, WitExtensionErrorV2>,)>(
@@ -110,9 +125,13 @@ impl ExtensionRuntime {
 
     /// Roll back a previously started deployment job.
     pub fn deploy_rollback(&self, ext_id: &str, job_id: &str) -> Result<(), RuntimeError> {
-        let (mut store, instance) = self.deploy_instance(ext_id)?;
-        let (iface_idx, version) = resolve_deployment_iface(&mut store, &instance)?;
-        let func_idx = resolve_func(&mut store, &instance, &iface_idx, "rollback")?;
+        let DeploymentCall {
+            mut store,
+            instance,
+            func_idx,
+            version,
+        } = self.deployment_call(ext_id, "rollback")?;
+
         if version == "0.2.0" {
             let func = instance
                 .get_typed_func::<(String,), (Result<(), WitExtensionErrorV2>,)>(
@@ -136,66 +155,22 @@ impl ExtensionRuntime {
         }
     }
 
-    /// Resolve a loaded extension into a fresh store + instance.
+    /// Resolve one `deployment` function into an open call site.
     ///
-    /// Deliberate departure from the sibling dispatch modules (which inline
-    /// these lines per method): three callers here made the duplication
-    /// worth factoring, at the cost of naming wasmtime types in a private
-    /// signature.
-    fn deploy_instance(
-        &self,
-        ext_id: &str,
-    ) -> Result<
-        (
-            wasmtime::Store<crate::host_state::HostState>,
-            wasmtime::component::Instance,
-        ),
-        RuntimeError,
-    > {
-        let loaded = self
-            .loaded()
-            .get(&ExtensionId(ext_id.to_string()))
-            .cloned()
-            .ok_or_else(|| RuntimeError::NotFound(ext_id.to_string()))?;
-        loaded
-            .build_store_and_instance(
-                self.engine(),
-                self.host_overrides().clone(),
-                &crate::host_ports::HostCallContext::default(),
-            )
-            .map_err(RuntimeError::Wasmtime)
-    }
-}
-
-/// Resolve the `deployment` interface newest-first across the deploy version
-/// table, returning the export index plus the matched bare version string so
-/// callers can pick the correct typed signature.
-fn resolve_deployment_iface(
-    store: &mut wasmtime::Store<crate::host_state::HostState>,
-    instance: &wasmtime::component::Instance,
-) -> Result<(wasmtime::component::ComponentExportIndex, &'static str), RuntimeError> {
-    let (iface_idx, _name, version) = crate::runtime::resolve_iface_versions(
-        store,
-        instance,
-        BASE_IFACE,
-        crate::runtime::DEPLOY_VERSIONS,
-    )?;
-    Ok((iface_idx, version))
-}
-
-fn resolve_func(
-    store: &mut wasmtime::Store<crate::host_state::HostState>,
-    instance: &wasmtime::component::Instance,
-    iface_idx: &wasmtime::component::ComponentExportIndex,
-    name: &str,
-) -> Result<wasmtime::component::ComponentExportIndex, RuntimeError> {
-    instance
-        .get_export_index(&mut *store, Some(iface_idx), name)
-        .ok_or_else(|| {
-            RuntimeError::Wasmtime(anyhow::anyhow!(
-                "interface '{BASE_IFACE}' does not export '{name}'"
-            ))
+    /// All three entry points above open identically; factoring it keeps the
+    /// version-resolution order from drifting between them.
+    fn deployment_call(&self, ext_id: &str, func: &str) -> Result<DeploymentCall, RuntimeError> {
+        let (mut store, instance) = self.dispatch_instance(ext_id)?;
+        let (iface_idx, iface_name, version) =
+            resolve_iface_versions(&mut store, &instance, DEPLOYMENT_IFACE, DEPLOY_VERSIONS)?;
+        let func_idx = resolve_func(&mut store, &instance, &iface_idx, &iface_name, func)?;
+        Ok(DeploymentCall {
+            store,
+            instance,
+            func_idx,
+            version,
         })
+    }
 }
 
 fn job_to_host(j: WitDeployJob) -> DeployJob {
@@ -258,7 +233,7 @@ mod tests {
 
     #[test]
     fn deploy_returns_not_found_for_unknown_extension() {
-        let rt = ExtensionRuntime::for_test();
+        let rt = ExtensionRuntime::for_test().expect("engine construction");
         let req = DeployRequest {
             target_id: "github-repo".into(),
             artifact_bytes: vec![1, 2, 3],
@@ -274,7 +249,7 @@ mod tests {
 
     #[test]
     fn deploy_poll_returns_not_found_for_unknown_extension() {
-        let rt = ExtensionRuntime::for_test();
+        let rt = ExtensionRuntime::for_test().expect("engine construction");
         match rt.deploy_poll("greentic.deploy-github", "job-1") {
             Err(RuntimeError::NotFound(id)) => assert_eq!(id, "greentic.deploy-github"),
             other => panic!("expected NotFound, got {other:?}"),
@@ -283,7 +258,7 @@ mod tests {
 
     #[test]
     fn deploy_rollback_returns_not_found_for_unknown_extension() {
-        let rt = ExtensionRuntime::for_test();
+        let rt = ExtensionRuntime::for_test().expect("engine construction");
         match rt.deploy_rollback("greentic.deploy-github", "job-1") {
             Err(RuntimeError::NotFound(id)) => assert_eq!(id, "greentic.deploy-github"),
             other => panic!("expected NotFound, got {other:?}"),

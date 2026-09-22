@@ -11,13 +11,29 @@ mod health;
 pub mod host_bindings;
 pub mod host_ports;
 mod host_state;
+mod host_state_llm;
+mod host_state_net;
+mod host_state_oauth;
+mod host_state_ports;
+mod http_scheme_policy;
+mod limits;
 mod loaded;
+mod net_permissions;
 pub mod oauth;
-mod pool;
 mod runtime;
+mod runtime_bundle;
+mod runtime_config;
 mod runtime_deploy;
+mod runtime_design;
 mod runtime_dw_composer;
+mod runtime_knowledge;
+mod runtime_registry;
 mod runtime_roles;
+mod runtime_sorx;
+mod runtime_targets;
+mod runtime_verify;
+mod runtime_views;
+mod runtime_watch;
 mod tool_metadata_report;
 pub mod types;
 pub mod url_matcher;
@@ -33,15 +49,17 @@ pub use self::host_ports::{
     InMemorySecrets, KeyTranslator, SecretsBackend, SecretsError, Translator,
 };
 pub use self::host_state::HostState;
+pub use self::limits::DEFAULT_DISPATCH_TIMEOUT;
 pub use self::loaded::{ExtensionId, HostOverrides, LoadedExtension, LoadedExtensionRef};
-pub use self::runtime::{
-    ExtensionRuntime, RuntimeConfig, RuntimeEvent, WatcherGuard, contribution_tool_to_definition,
-};
+pub use self::runtime::{ExtensionRuntime, RuntimeEvent, WatcherGuard};
+pub use self::runtime_config::RuntimeConfig;
+pub use self::runtime_design::contribution_tool_to_definition;
+pub use self::runtime_views::view_to_definition;
 pub use self::types::{
     BundleArtifact, BundleSession, CompileContext, DeployExtensionError, DeployJob, DeployRequest,
     DeployStatus, Diagnostic, HostExtensionError, KnowledgeEntry, KnowledgeEntrySummary,
     PromptFragment, RoleError, RoleSpec, Severity, TargetKind, TargetSummary, ToolDefinition,
-    ValidateResult,
+    ValidateResult, ViewDefinition,
 };
 pub use self::url_matcher::UrlMatcher;
 

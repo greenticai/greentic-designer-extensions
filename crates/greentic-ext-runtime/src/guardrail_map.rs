@@ -67,10 +67,7 @@ pub(crate) fn call_evaluate(
     let dto: InputDto =
         serde_json::from_str(input_json).map_err(|e| crate::RuntimeError::Wasmtime(e.into()))?;
 
-    let direction = match dto.direction.as_str() {
-        "outbound" => gr::Direction::Outbound,
-        _ => gr::Direction::Inbound,
-    };
+    let direction = parse_direction(&dto.direction)?;
 
     let input = gr::GuardrailInput {
         direction,
@@ -91,6 +88,28 @@ pub(crate) fn call_evaluate(
         .map_err(|e| crate::RuntimeError::Wasmtime(e.into()))?;
 
     Ok(map_verdict(verdict))
+}
+
+/// Parse the `direction` field, refusing anything the WIT does not define.
+///
+/// Fail closed. Defaulting an unknown value to `inbound` meant a typo, or an
+/// `outbound` field the caller forgot to set, silently evaluated the guardrail
+/// against the wrong direction — and a guardrail that answers the wrong
+/// question still answers `accept`.
+fn parse_direction(
+    raw: &str,
+) -> Result<
+    crate::host_bindings::design_v03::exports::greentic::extension_design0_3_0::guardrail::Direction,
+    crate::RuntimeError,
+>{
+    use crate::host_bindings::design_v03::exports::greentic::extension_design0_3_0::guardrail as gr;
+    match raw {
+        "inbound" => Ok(gr::Direction::Inbound),
+        "outbound" => Ok(gr::Direction::Outbound),
+        other => Err(crate::RuntimeError::Wasmtime(anyhow::anyhow!(
+            "guardrail direction must be \"inbound\" or \"outbound\", got {other:?}"
+        ))),
+    }
 }
 
 /// Map a bindgen [`Verdict`] to its wire-serialisable counterpart.

@@ -9,20 +9,24 @@ use std::path::PathBuf;
 
 use greentic_ext_runtime::{DiscoveryPaths, ExtensionRuntime, RuntimeConfig, Severity};
 
+// `#[ignore]` rather than a bare `return`. Printing "skipping" and returning
+// reports the test as **passed**, in a run indistinguishable from one that
+// actually exercised a real component — so a regression here was invisible to
+// CI while the suite read green. Ignored tests are counted and named instead.
+// The `fixture-tests` workflow builds the pack and runs these with
+// `cargo test -- --ignored`.
+#[ignore = "needs GTDX_TEST_GTXPACK; run via the fixture-tests workflow or `cargo test -- --ignored`"]
 #[test]
 fn validate_content_on_ac_extension_accepts_minimal_card() {
     let Ok(raw) = std::env::var("GTDX_TEST_GTXPACK") else {
-        eprintln!("skipping: GTDX_TEST_GTXPACK not set (see ac_invoke.rs for setup).");
-        return;
+        panic!("GTDX_TEST_GTXPACK is not set (see ac_invoke.rs for setup)");
     };
     let pack = PathBuf::from(raw);
-    if !pack.exists() {
-        eprintln!(
-            "skipping: GTDX_TEST_GTXPACK points to non-existent file: {}",
-            pack.display()
-        );
-        return;
-    }
+    assert!(
+        pack.exists(),
+        "GTDX_TEST_GTXPACK points to a non-existent file: {}",
+        pack.display()
+    );
 
     let tmp = tempfile::TempDir::new().unwrap();
     let ext_dir = tmp.path().join("ext");

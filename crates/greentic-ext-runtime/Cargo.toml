@@ -15,13 +15,13 @@ default = []
 dev-allow-unsigned = []
 
 [dependencies]
-greentic-extension-sdk-contract = "=1.2.23"
+greentic-extension-sdk-contract = "=1.3.0-research.5"
 # Reused for `trust_store::TrustStore` — the TOFU publisher-key anchor the
 # verify chain pins against. Deliberately reused rather than ported: the SDK's
 # store already carries the file-locking + atomic-rename care this needs, and
 # relocating it to `-contract` would require a new SDK tag plus a version bump
 # in every consumer. Compile-time weight only.
-greentic-extension-sdk-registry = "=1.2.23"
+greentic-extension-sdk-registry = "=1.3.0-research.5"
 greentic-types = { workspace = true }
 
 [dependencies.directories]
@@ -87,7 +87,7 @@ workspace = true
 
 [dev-dependencies]
 cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
-greentic-extension-sdk-testing = "=1.2.23"
+greentic-extension-sdk-testing = "=1.3.0-research.5"
 wat = "1"
 
 [dev-dependencies.wiremock]

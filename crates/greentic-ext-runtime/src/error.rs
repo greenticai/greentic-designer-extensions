@@ -2,9 +2,6 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
-    #[error("extension '{0}' already loaded")]
-    AlreadyLoaded(String),
-
     #[error("extension '{0}' not found")]
     NotFound(String),
 
@@ -17,9 +14,6 @@ pub enum RuntimeError {
         extension_id: String,
         reason: String,
     },
-
-    #[error("contract error: {0}")]
-    Contract(#[from] greentic_extension_sdk_contract::ContractError),
 
     #[error("wasmtime: {0}")]
     Wasmtime(#[from] anyhow::Error),
@@ -35,9 +29,6 @@ pub enum RuntimeError {
 
     #[error("deploy extension error: {0}")]
     Deploy(crate::types::DeployExtensionError),
-
-    #[error("permission denied: {0}")]
-    PermissionDenied(String),
 
     /// A WIT-level `extension-error` returned by the extension itself.
     /// Carries the variant intact so hosts can surface a stable `code`

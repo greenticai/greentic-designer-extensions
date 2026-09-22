@@ -6,8 +6,10 @@ use wasmtime::Store;
 use wasmtime::component::{Component, HasSelf, Instance, Linker};
 
 use crate::health::ExtensionHealth;
+
+/// Design-side component every dual-layout pack ships at its root.
+const DESIGN_WASM_NAME: &str = "extension.wasm";
 use crate::host_state::HostState;
-use crate::pool::InstancePool;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ExtensionId(pub String);
@@ -42,25 +44,38 @@ pub struct LoadedExtension {
     pub kind: ExtensionKind,
     pub source_dir: PathBuf,
     pub component: Component,
-    pub pool: InstancePool,
     pub health: ExtensionHealth,
 }
 
 impl LoadedExtension {
-    pub fn load_from_dir(engine: &wasmtime::Engine, source_dir: &Path) -> anyhow::Result<Self> {
-        let describe_path = source_dir.join("describe.json");
-        let describe_bytes = std::fs::read(&describe_path)?;
-        let describe_value: serde_json::Value = serde_json::from_slice(&describe_bytes)?;
-        greentic_extension_sdk_contract::schema::validate_describe_json(&describe_value)
-            .map_err(|e| anyhow::anyhow!("invalid describe.json: {e}"))?;
-        let describe: DescribeJson = serde_json::from_value(describe_value)?;
+    /// Instantiate from the describe the load gate already verified.
+    ///
+    /// Taking the describe rather than re-reading it is the point: the gate
+    /// parses `describe.json`, and every field that decides *identity and
+    /// authority* is read back out of it here — `metadata.id` (the registration
+    /// key, and the key the publisher pin is filed under) and
+    /// `runtime.permissions` (the network allow-list and the secret namespace).
+    /// Re-reading the file would let a writer who lands between the two reads
+    /// have the runtime verify and pin one identity while registering a
+    /// different one, with wide-open permissions, from a directory the
+    /// installer owns and any user process can write.
+    ///
+    /// The component bytes are still read from disk here; see
+    /// `ExtensionRuntime::verify_dir_signature` for what that leaves open.
+    pub(crate) fn from_verified(
+        engine: &wasmtime::Engine,
+        source_dir: &Path,
+        describe: DescribeJson,
+        ledger: &crate::runtime_verify::VerifiedLedger,
+    ) -> anyhow::Result<Self> {
         // Every load path funnels through here, so the report fires once per
         // load — boot and hot-reload — and never per `list_tools()` call.
         crate::tool_metadata_report::report_tool_metadata_gaps(&describe);
         let id = ExtensionId::from_describe(&describe);
         let wasm_path = wasm_component_path(&describe, source_dir)?;
-        let component = Component::from_file(engine, &wasm_path)?;
-        let pool = InstancePool::new(2);
+        // From bytes the ledger vouches for, not from a path re-read later.
+        let wasm = ledger.read_verified(&wasm_path)?;
+        let component = Component::from_binary(engine, &wasm)?;
         let kind = describe.kind;
         Ok(Self {
             id,
@@ -68,7 +83,6 @@ impl LoadedExtension {
             kind,
             source_dir: source_dir.to_path_buf(),
             component,
-            pool,
             health: ExtensionHealth::Healthy,
         })
     }
@@ -76,12 +90,14 @@ impl LoadedExtension {
 
 impl LoadedExtension {
     /// Build a fresh wasmtime Store with [`HostState`] and instantiate the component.
-    /// Each call creates a new instance (no pooling yet — pooling is future work).
-    pub fn build_store_and_instance(
+    /// Each call creates a new instance: a `Store` is single-threaded and
+    /// carries this dispatch's `HostState`, so it is never reused across calls.
+    pub(crate) fn build_store_and_instance(
         &self,
         engine: &wasmtime::Engine,
         host_overrides: HostOverrides,
         ctx: &crate::host_ports::HostCallContext,
+        dispatch_timeout: Option<std::time::Duration>,
     ) -> anyhow::Result<(Store<HostState>, Instance)> {
         use crate::host_bindings::greentic::extension_host::{
             broker, http, i18n, llm, logging, secrets,
@@ -111,7 +127,7 @@ impl LoadedExtension {
         // the host-level override is NOT added). When no patterns are
         // declared the host-level override is used unchanged (deny-all by
         // default). See `effective_url_matcher` for the loopback-http rule.
-        let url_matcher = effective_url_matcher(
+        let url_matcher = crate::net_permissions::effective_url_matcher(
             &self.describe.runtime.permissions.network,
             host_overrides.url_matcher,
         );
@@ -123,6 +139,7 @@ impl LoadedExtension {
         .translator(host_overrides.translator)
         .secrets_backend(host_overrides.secrets_backend)
         .http_client(host_overrides.http_client)
+        .http_timeout(crate::limits::http_timeout_for(dispatch_timeout))
         .llm_port(host_overrides.llm_port)
         .call_ctx(ctx.clone())
         .url_matcher(url_matcher)
@@ -132,6 +149,12 @@ impl LoadedExtension {
         .build();
 
         let mut store = Store::new(engine, state);
+        // Before `instantiate`, not after. A limiter that is not installed yet
+        // is never consulted, and a component's memories and tables are
+        // allocated at their declared *initial* size during instantiation — so
+        // applying this afterwards left the ceilings covering only
+        // `memory.grow`, which a guest never has to call.
+        crate::limits::apply(&mut store, dispatch_timeout);
         let instance = linker.instantiate(&mut store, &self.component)?;
         Ok((store, instance))
     }
@@ -179,7 +202,7 @@ fn wasm_component_path(describe: &DescribeJson, source_dir: &Path) -> anyhow::Re
     // Provider, llm-openai (DesignExtension), and bundle-standard (BundleExtension)
     // all follow this layout. Older single-component extensions that don't ship
     // `extension.wasm` fall back to the describe.json declared path below.
-    let design_wasm = source_dir.join("extension.wasm");
+    let design_wasm = source_dir.join(DESIGN_WASM_NAME);
     if design_wasm.exists() {
         return Ok(design_wasm);
     }
@@ -201,126 +224,16 @@ fn wasm_component_path(describe: &DescribeJson, source_dir: &Path) -> anyhow::Re
             "describe.runtime.components[{id:?}].gtpack must be set for source-dir loads (OCI-only deploy is not yet supported)",
         )
     })?;
-    Ok(source_dir.join(gtpack.file.as_str()))
-}
-
-/// Select the URL matcher for a single extension instantiation.
-///
-/// **Replace semantics:** when the extension's `describe.json` declares one
-/// or more patterns under `runtime.permissions.network`, those patterns are
-/// the authoritative allow-list for that extension and a fresh
-/// [`UrlMatcher`] is built from them (with the loopback-http rule applied —
-/// see below). The host-level `override_matcher` is **ignored** in this
-/// path — it is the host-wide default that applies only to extensions that
-/// make no network declaration.
-///
-/// When the declaration is empty the host-level override is returned
-/// unchanged, which is the deny-all default in most deployments. This
-/// preserves existing behavior for extensions that do not need outbound HTTP.
-///
-/// # Loopback-http rule
-///
-/// [`UrlMatcher`] rejects non-`https` URLs by default (scheme-downgrade
-/// defence) and only honours plain `http` when `with_allow_http(true)` is
-/// set. That toggle is **matcher-wide** — it cannot be scoped to a single
-/// pattern. To let an extension talk to a local dev service over
-/// `http://127.0.0.1` / `http://localhost` WITHOUT also opening plain http
-/// to public hosts, we:
-///
-/// 1. drop any declared `http://` pattern whose host is NOT loopback (it
-///    could never be safely honoured — a public-host plain-http downgrade
-///    is exactly the attack the matcher defends against), and
-/// 2. enable `with_allow_http(true)` only when at least one *loopback*
-///    `http://` pattern survives.
-///
-/// Because the matcher matches scheme exactly per declared pattern, a
-/// co-declared `https://host/*` pattern still requires `https` even when
-/// the toggle is on — the toggle only decides whether `http` patterns are
-/// consulted at all, and after step 1 the only surviving `http` patterns
-/// are loopback.
-///
-/// # Arguments
-///
-/// * `declared_patterns` — the `runtime.permissions.network` slice from
-///   the extension's parsed `describe.json`.
-/// * `override_matcher` — the host-level matcher supplied via
-///   [`HostOverrides`]. Used only when `declared_patterns` is empty.
-///
-/// # Returns
-///
-/// A [`UrlMatcher`] that enforces the correct allow-list for this extension.
-pub(crate) fn effective_url_matcher(
-    declared_patterns: &[String],
-    override_matcher: crate::url_matcher::UrlMatcher,
-) -> crate::url_matcher::UrlMatcher {
-    if declared_patterns.is_empty() {
-        return override_matcher;
-    }
-
-    // Replace path: build the effective matcher exclusively from the
-    // extension's declared patterns (the host override does NOT apply).
-    let mut patterns: Vec<String> = declared_patterns.to_vec();
-
-    // Loopback-http handling: keep loopback http patterns, drop public-host
-    // http patterns (they can never be honoured safely), and record whether
-    // any loopback http pattern remains so we can flip the matcher-wide
-    // allow_http toggle.
-    let mut allow_loopback_http = false;
-    patterns.retain(|p| {
-        if let Some(host) = http_pattern_host(p) {
-            if is_loopback_host(host) {
-                allow_loopback_http = true;
-                true
-            } else {
-                tracing::warn!(
-                    pattern = %p,
-                    "dropping non-loopback http url pattern; plain http is only honoured for loopback hosts"
-                );
-                false
-            }
-        } else {
-            // https (or any non-http) pattern — kept verbatim; UrlMatcher
-            // validates it on construction.
-            true
-        }
-    });
-
-    crate::url_matcher::UrlMatcher::from_patterns(patterns).with_allow_http(allow_loopback_http)
-}
-
-/// Return the host portion of a `http://` pattern, or `None` when the
-/// pattern is not plain http. The leading `*.` wildcard label (e.g.
-/// `http://*.example.com/*`) is stripped so the remaining host can be
-/// classified; a bare wildcard host is treated as non-loopback.
-///
-/// Bracketed IPv6 literals (e.g. `[::1]` in `http://[::1]:8787/*`) are
-/// returned with their brackets intact so that `is_loopback_host` can strip
-/// them: splitting on the first `:` would otherwise yield the bare `"["`
-/// opener and misclassify `[::1]` as non-loopback.
-fn http_pattern_host(pattern: &str) -> Option<&str> {
-    let rest = pattern.strip_prefix("http://")?;
-    let host_and_port = rest.split('/').next().unwrap_or(rest);
-    // Strip the userinfo (`user@host`) if present.
-    let host_and_port = host_and_port.rsplit('@').next().unwrap_or(host_and_port);
-    // Bracketed IPv6 literal: `[::1]` or `[::1]:8787`.
-    // Return the bracketed token (including the `]`) so is_loopback_host can
-    // strip the brackets and compare against `::1`.
-    let host = if let Some(bracket_end) = host_and_port.find(']') {
-        &host_and_port[..=bracket_end]
-    } else {
-        // Plain hostname or IPv4: split on first `:` to drop optional port.
-        host_and_port.split(':').next().unwrap_or(host_and_port)
-    };
-    Some(host.trim_start_matches("*."))
-}
-
-/// Loopback hosts for which plain http is acceptable: `localhost`,
-/// `127.0.0.1` (any IPv4 loopback in `127.0.0.0/8` would also qualify, but
-/// the only spellings extensions declare in practice are these two and
-/// `[::1]`), and the IPv6 loopback.
-fn is_loopback_host(host: &str) -> bool {
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+    // `gtpack.file` is a publisher-controlled string that goes straight into
+    // the component compiler, so it gets the same path discipline as a ledger
+    // entry. `Path::join` honours an absolute path by discarding `source_dir`,
+    // and `..` walks out of the pack — either would compile bytes that sit
+    // outside the directory the manifest covers, which is to say bytes no
+    // signature and no hash has ever seen. Constrained to the pack, the file is
+    // necessarily one the ledger lists, because `verify_dir_manifest` rejects
+    // any file in the directory that it does not.
+    crate::runtime_verify::pack_relative_path(source_dir, gtpack.file.as_str())
+        .map_err(|e| anyhow::anyhow!("describe.runtime.components[{id:?}].gtpack.file: {e}"))
 }
 
 pub type LoadedExtensionRef = Arc<LoadedExtension>;
@@ -417,205 +330,5 @@ impl Default for HostOverrides {
             call_depth_start: 0,
             oauth_config: None,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::url_matcher::UrlMatcher;
-
-    fn empty_override() -> UrlMatcher {
-        UrlMatcher::default()
-    }
-
-    fn override_with_pattern(pattern: &str) -> UrlMatcher {
-        UrlMatcher::from_patterns(vec![pattern.to_string()])
-    }
-
-    /// Extensions that declare network patterns must have exactly those
-    /// patterns enforced — the host-level override must NOT apply.
-    #[test]
-    fn declared_patterns_allow_declared_host_and_deny_undeclared() {
-        let declared = vec!["https://api.github.com/*".to_string()];
-        let matcher = effective_url_matcher(&declared, empty_override());
-
-        assert!(
-            matcher.is_allowed("https://api.github.com/repos/org/repo"),
-            "declared host must be allowed"
-        );
-        assert!(
-            !matcher.is_allowed("https://evil.com/"),
-            "undeclared host must be denied even though host override is empty"
-        );
-    }
-
-    /// When no network patterns are declared the host-level override is
-    /// returned verbatim — behavior is unchanged for legacy extensions.
-    #[test]
-    fn empty_declaration_falls_back_to_host_override() {
-        let override_matcher = override_with_pattern("https://allowed.com/*");
-        let matcher = effective_url_matcher(&[], override_matcher);
-
-        assert!(
-            matcher.is_allowed("https://allowed.com/path"),
-            "host-override host must be reachable when declare is empty"
-        );
-        assert!(
-            !matcher.is_allowed("https://other.com/path"),
-            "host-override deny must still apply"
-        );
-    }
-
-    /// Non-empty declaration REPLACES (not unions) the host-level
-    /// override. A broader operator override must not bleed through to
-    /// an extension that declared its own narrower allow-list.
-    #[test]
-    fn declared_patterns_replace_not_union_host_override() {
-        let declared = vec!["https://api.github.com/*".to_string()];
-        let override_matcher = override_with_pattern("https://operator-allowed.com/*");
-        let matcher = effective_url_matcher(&declared, override_matcher);
-
-        assert!(
-            matcher.is_allowed("https://api.github.com/repos/org/repo"),
-            "declared host must be allowed"
-        );
-        assert!(
-            !matcher.is_allowed("https://operator-allowed.com/anything"),
-            "operator override must NOT bleed through when declaration is non-empty"
-        );
-    }
-
-    /// Empty declaration + empty host override must deny every URL —
-    /// this is the default deny-all posture for extensions that never
-    /// call the network.
-    #[test]
-    fn empty_declaration_and_empty_override_denies_everything() {
-        let matcher = effective_url_matcher(&[], empty_override());
-
-        assert!(
-            !matcher.is_allowed("https://api.github.com/anything"),
-            "empty declaration + empty override must produce deny-all matcher"
-        );
-    }
-
-    /// A declared loopback `http://127.0.0.1` pattern must be reachable
-    /// over plain http. The matcher rejects non-https by default, so the
-    /// effective matcher has to opt http in — but ONLY because the
-    /// declared pattern is loopback.
-    #[test]
-    fn declared_http_loopback_127_allows_plain_http() {
-        let declared = vec!["http://127.0.0.1:8787/*".to_string()];
-        let matcher = effective_url_matcher(&declared, empty_override());
-
-        assert!(
-            matcher.is_allowed("http://127.0.0.1:8787/execute"),
-            "declared http loopback pattern must permit plain http to that loopback"
-        );
-    }
-
-    /// `http://localhost` is the other loopback spelling and must behave
-    /// the same as `127.0.0.1`.
-    #[test]
-    fn declared_http_loopback_localhost_allows_plain_http() {
-        let declared = vec!["http://localhost:8787/*".to_string()];
-        let matcher = effective_url_matcher(&declared, empty_override());
-
-        assert!(
-            matcher.is_allowed("http://localhost:8787/execute"),
-            "declared http localhost pattern must permit plain http to localhost"
-        );
-    }
-
-    /// The loopback-http opt-in must NOT leak to non-loopback http: a
-    /// declared `http://evil.com` pattern must stay denied (no plain-http
-    /// downgrade for a public host) even though the pattern technically
-    /// targets http.
-    #[test]
-    fn declared_http_non_loopback_stays_denied() {
-        let declared = vec!["http://evil.com/*".to_string()];
-        let matcher = effective_url_matcher(&declared, empty_override());
-
-        assert!(
-            !matcher.is_allowed("http://evil.com/anything"),
-            "plain http must stay denied for a non-loopback declared host"
-        );
-    }
-
-    /// A mixed declaration (loopback http + a normal https host) must keep
-    /// https reachable AND the loopback http reachable, while still
-    /// refusing plain http to the https host (the global `allow_http` toggle
-    /// must not downgrade the https-only host because no http pattern for
-    /// it exists, and `is_allowed` matches scheme exactly per pattern).
-    #[test]
-    fn mixed_loopback_http_and_https_host() {
-        let declared = vec![
-            "http://127.0.0.1:8787/*".to_string(),
-            "https://api.example.com/*".to_string(),
-        ];
-        let matcher = effective_url_matcher(&declared, empty_override());
-
-        assert!(
-            matcher.is_allowed("http://127.0.0.1:8787/execute"),
-            "loopback http must be allowed in a mixed declaration"
-        );
-        assert!(
-            matcher.is_allowed("https://api.example.com/v1/foo"),
-            "declared https host must stay reachable"
-        );
-        assert!(
-            !matcher.is_allowed("http://api.example.com/v1/foo"),
-            "plain http to the https-only host must stay denied even with loopback http enabled"
-        );
-    }
-
-    /// A bracketed IPv6 loopback `http://[::1]:8787/*` must survive the
-    /// loopback filter and allow plain http to `http://[::1]:8787/x`.
-    ///
-    /// The url crate's `host_str()` returns the bracketed form `"[::1]"` for
-    /// both the pattern and the request URL, so the Exact host rule matches.
-    /// The bug this test guards against: `http_pattern_host` previously split
-    /// on the first `:`, yielding `"["` as the host, which was classified as
-    /// non-loopback and dropped.
-    #[test]
-    fn declared_http_ipv6_loopback_allows_plain_http() {
-        let declared = vec!["http://[::1]:8787/*".to_string()];
-        let matcher = effective_url_matcher(&declared, empty_override());
-
-        assert!(
-            matcher.is_allowed("http://[::1]:8787/x"),
-            "declared http IPv6 loopback pattern must permit plain http to [::1]"
-        );
-        // Must not bleed to arbitrary non-loopback hosts.
-        assert!(
-            !matcher.is_allowed("http://evil.com/x"),
-            "IPv6 loopback opt-in must not permit plain http to non-loopback hosts"
-        );
-    }
-
-    /// An adversarial pattern `http://[::1].evil.com/*` that tries to smuggle
-    /// a non-loopback host inside brackets must be rejected. The url crate
-    /// refuses to parse this (it is not a valid bracketed IPv6 literal), so
-    /// the pattern is either unparseable (dropped by `UrlMatcher`) or the
-    /// resulting host does not match `[::1]` in `is_loopback_host`.
-    ///
-    /// Either way the request to `http://[::1].evil.com/x` must be denied.
-    #[test]
-    fn adversarial_fake_ipv6_bracket_host_is_denied() {
-        let declared = vec!["http://[::1].evil.com/*".to_string()];
-        let matcher = effective_url_matcher(&declared, empty_override());
-
-        // The pattern is malformed: url::Url::parse rejects `[::1].evil.com`
-        // as a host, so the pattern is silently dropped and the matcher
-        // remains deny-all for this declaration.
-        assert!(
-            !matcher.is_allowed("http://[::1].evil.com/x"),
-            "malformed bracketed host must not be allowed"
-        );
-        // Real IPv6 loopback must also NOT be granted by a bad pattern.
-        assert!(
-            !matcher.is_allowed("http://[::1]/x"),
-            "bad pattern must not accidentally allow real IPv6 loopback"
-        );
     }
 }

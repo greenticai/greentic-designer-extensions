@@ -11,7 +11,6 @@
 //! interface export, obtain the typed function, call it.
 
 use crate::error::RuntimeError;
-use crate::loaded::ExtensionId;
 use crate::runtime::ExtensionRuntime;
 
 /// Version resolution order for the dw-composer interface — newest first.
@@ -32,19 +31,7 @@ impl ExtensionRuntime {
     /// `ext_id`, and `RuntimeError::Wasmtime` for any host-level failure
     /// (missing interface, trap, type mismatch).
     pub fn invoke_composer_metadata(&self, ext_id: &str) -> Result<String, RuntimeError> {
-        let loaded = self
-            .loaded()
-            .get(&ExtensionId(ext_id.to_string()))
-            .cloned()
-            .ok_or_else(|| RuntimeError::NotFound(ext_id.to_string()))?;
-
-        let (mut store, instance) = loaded
-            .build_store_and_instance(
-                self.engine(),
-                self.host_overrides().clone(),
-                &crate::host_ports::HostCallContext::default(),
-            )
-            .map_err(RuntimeError::Wasmtime)?;
+        let (mut store, instance) = self.dispatch_instance(ext_id)?;
 
         let (iface_idx, iface_name, _version) = resolve_dw_composer_iface(&mut store, &instance)?;
 
@@ -89,19 +76,7 @@ impl ExtensionRuntime {
         ext_id: &str,
         intent_json: &str,
     ) -> Result<Result<String, crate::types::HostExtensionError>, RuntimeError> {
-        let loaded = self
-            .loaded()
-            .get(&ExtensionId(ext_id.to_string()))
-            .cloned()
-            .ok_or_else(|| RuntimeError::NotFound(ext_id.to_string()))?;
-
-        let (mut store, instance) = loaded
-            .build_store_and_instance(
-                self.engine(),
-                self.host_overrides().clone(),
-                &crate::host_ports::HostCallContext::default(),
-            )
-            .map_err(RuntimeError::Wasmtime)?;
+        let (mut store, instance) = self.dispatch_instance(ext_id)?;
 
         let (iface_idx, iface_name, version) = resolve_dw_composer_iface(&mut store, &instance)?;
 
@@ -151,19 +126,7 @@ impl ExtensionRuntime {
         ext_id: &str,
         manifest_json: &str,
     ) -> Result<String, RuntimeError> {
-        let loaded = self
-            .loaded()
-            .get(&ExtensionId(ext_id.to_string()))
-            .cloned()
-            .ok_or_else(|| RuntimeError::NotFound(ext_id.to_string()))?;
-
-        let (mut store, instance) = loaded
-            .build_store_and_instance(
-                self.engine(),
-                self.host_overrides().clone(),
-                &crate::host_ports::HostCallContext::default(),
-            )
-            .map_err(RuntimeError::Wasmtime)?;
+        let (mut store, instance) = self.dispatch_instance(ext_id)?;
 
         let (iface_idx, iface_name, _version) = resolve_dw_composer_iface(&mut store, &instance)?;
 
@@ -194,19 +157,7 @@ impl ExtensionRuntime {
     /// Returns `RuntimeError::NotFound` when no extension is loaded at
     /// `ext_id`, and `RuntimeError::Wasmtime` for host-level failures.
     pub fn invoke_composer_templates(&self, ext_id: &str) -> Result<String, RuntimeError> {
-        let loaded = self
-            .loaded()
-            .get(&ExtensionId(ext_id.to_string()))
-            .cloned()
-            .ok_or_else(|| RuntimeError::NotFound(ext_id.to_string()))?;
-
-        let (mut store, instance) = loaded
-            .build_store_and_instance(
-                self.engine(),
-                self.host_overrides().clone(),
-                &crate::host_ports::HostCallContext::default(),
-            )
-            .map_err(RuntimeError::Wasmtime)?;
+        let (mut store, instance) = self.dispatch_instance(ext_id)?;
 
         let (iface_idx, iface_name, _version) = resolve_dw_composer_iface(&mut store, &instance)?;
 
