@@ -6,7 +6,8 @@
 use crate::host_bindings::greentic::extension_host::llm;
 use crate::host_state::HostState;
 
-/// Most inputs one `embed` call may carry. A guest that needs more batches.
+/// Most inputs one `embed` call may carry. A guest with more must split them
+/// across several calls.
 pub(crate) const MAX_EMBED_INPUTS: usize = 128;
 /// Most input bytes one `embed` call may carry, summed across inputs.
 pub(crate) const MAX_EMBED_BYTES: usize = 1024 * 1024;
