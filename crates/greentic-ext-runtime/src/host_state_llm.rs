@@ -6,28 +6,41 @@
 use crate::host_bindings::greentic::extension_host::llm;
 use crate::host_state::HostState;
 
+/// Most inputs one `embed` call may carry. A guest that needs more batches.
+pub(crate) const MAX_EMBED_INPUTS: usize = 128;
+/// Most input bytes one `embed` call may carry, summed across inputs.
+pub(crate) const MAX_EMBED_BYTES: usize = 1024 * 1024;
+
+impl HostState {
+    /// Resolve the effective LLM role from the extension's declared
+    /// permissions. Shared by `complete` and `embed`: two copies of this gate
+    /// would be two places for the permission model to drift, and a drift here
+    /// is an extension reaching a role it never declared.
+    fn resolve_llm_role(&self, hint: Option<&str>) -> Result<String, String> {
+        let declared = &self.permissions.llm_roles;
+        match (hint, declared.as_slice()) {
+            (Some(h), roles) if roles.iter().any(|r| r == h) => Ok(h.to_string()),
+            (Some(h), _) => {
+                tracing::warn!(ext = %self.extension_id, requested = %h, "llm role not permitted");
+                Err(format!("llm role not permitted: {h}"))
+            }
+            (None, [sole]) => Ok(sole.clone()),
+            (None, []) => {
+                Err("llm role not permitted: extension declares no llm_roles".to_string())
+            }
+            (None, _many) => {
+                Err("llm role-hint required: extension declares multiple llm_roles".to_string())
+            }
+        }
+    }
+}
+
 impl llm::Host for HostState {
     fn complete(&mut self, request: llm::LlmRequest) -> Result<llm::LlmResponse, String> {
         // 1. Resolve the effective role from describe permissions. A `role_hint`
         //    must be one the extension declared; with no hint we allow the sole
         //    declared role and otherwise require disambiguation.
-        let declared = &self.permissions.llm_roles;
-        let role = match (&request.role_hint, declared.as_slice()) {
-            (Some(hint), roles) if roles.iter().any(|r| r == hint) => hint.clone(),
-            (Some(hint), _) => {
-                tracing::warn!(ext = %self.extension_id, requested = %hint, "llm role not permitted");
-                return Err(format!("llm role not permitted: {hint}"));
-            }
-            (None, [sole]) => sole.clone(),
-            (None, []) => {
-                return Err("llm role not permitted: extension declares no llm_roles".to_string());
-            }
-            (None, _many) => {
-                return Err(
-                    "llm role-hint required: extension declares multiple llm_roles".to_string(),
-                );
-            }
-        };
+        let role = self.resolve_llm_role(request.role_hint.as_deref())?;
 
         // 2. Resolve the port. Absent in unit tests and runtimes the host did
         //    not wire for LLM use — surface a clean error rather than panic.
@@ -64,13 +77,61 @@ impl llm::Host for HostState {
             }
         }
     }
+
+    fn embed(&mut self, request: llm::EmbedRequest) -> Result<llm::EmbedResponse, String> {
+        let role = self.resolve_llm_role(request.role_hint.as_deref())?;
+
+        // Caps live here, once, rather than in each port: an over-cap batch is
+        // refused and NEVER truncated, because the guest correlates vectors to
+        // its own chunks positionally — a short batch is wrong data, not a
+        // visible failure.
+        if request.inputs.is_empty() {
+            return Err("embed: inputs is empty".to_string());
+        }
+        if request.inputs.len() > MAX_EMBED_INPUTS {
+            return Err(format!(
+                "embed: {} inputs exceeds the {MAX_EMBED_INPUTS} limit",
+                request.inputs.len()
+            ));
+        }
+        let total: usize = request.inputs.iter().map(String::len).sum();
+        if total > MAX_EMBED_BYTES {
+            return Err(format!(
+                "embed: {total} bytes of input exceeds the {MAX_EMBED_BYTES} limit"
+            ));
+        }
+        if let Some(index) = request.inputs.iter().position(|s| s.trim().is_empty()) {
+            return Err(format!("embed: inputs[{index}] is empty"));
+        }
+
+        let Some(port) = self.llm_port.as_ref() else {
+            return Err("llm not configured for this runtime".to_string());
+        };
+
+        let port_req = crate::host_ports::EmbedPortRequest {
+            inputs: request.inputs,
+        };
+        match port.embed(&self.extension_id, &self.call_ctx, &role, port_req) {
+            Ok(r) => Ok(llm::EmbedResponse {
+                vectors: r.vectors,
+                model: r.model,
+            }),
+            Err(e) => {
+                tracing::warn!(ext = %self.extension_id, %role, error = %e, "llm embed port error");
+                Err(e.to_string())
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::host_bindings::greentic::extension_host::llm::Host as LlmHost;
-    use crate::host_ports::{HostCallContext, LlmPort, LlmPortRequest, LlmPortResponse};
+    use crate::host_ports::{
+        EmbedPortRequest, EmbedPortResponse, HostCallContext, LlmPort, LlmPortRequest,
+        LlmPortResponse,
+    };
     use greentic_extension_sdk_contract::describe::Permissions;
     use std::sync::Arc;
 
@@ -256,5 +317,207 @@ mod tests {
             .build();
         let err = h.complete(llm_request(None)).unwrap_err();
         assert!(err.contains("role-hint required"), "got: {err}");
+    }
+
+    /// A port that records what it was asked to embed and answers with one
+    /// vector per input, so the tests can assert order and count.
+    struct RecordingEmbedPort {
+        seen: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl LlmPort for RecordingEmbedPort {
+        fn complete(
+            &self,
+            _extension_id: &str,
+            _ctx: &HostCallContext,
+            _role: &str,
+            _request: LlmPortRequest,
+        ) -> Result<LlmPortResponse, crate::host_ports::LlmPortError> {
+            unreachable!("these tests only embed")
+        }
+
+        fn embed(
+            &self,
+            _extension_id: &str,
+            _ctx: &HostCallContext,
+            _role: &str,
+            request: EmbedPortRequest,
+        ) -> Result<EmbedPortResponse, crate::host_ports::LlmPortError> {
+            *self.seen.lock().unwrap() = request.inputs.clone();
+            Ok(EmbedPortResponse {
+                vectors: request.inputs.iter().map(|_| vec![0.5_f32]).collect(),
+                model: "text-embedding-3-small".to_string(),
+            })
+        }
+    }
+
+    // `HostState::builder` takes the extension id and the permissions as two
+    // POSITIONAL arguments — read the existing `llm_complete_resolves_sole_
+    // declared_role` test at `:137` and keep this chain identical to it.
+    fn embed_host(port: Arc<RecordingEmbedPort>) -> HostState {
+        HostState::builder(
+            "test-ext".to_string(),
+            perms_with_roles(&["agentic_worker_composer"]),
+        )
+        .llm_port(Some(port))
+        .call_ctx(HostCallContext {
+            tenant: Some("acme".into()),
+            ..HostCallContext::default()
+        })
+        .build()
+    }
+
+    #[test]
+    fn embed_returns_one_vector_per_input_in_input_order() {
+        let port = Arc::new(RecordingEmbedPort {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut host = embed_host(port.clone());
+
+        let response = host
+            .embed(llm::EmbedRequest {
+                role_hint: None,
+                inputs: vec!["alpha".to_string(), "beta".to_string()],
+            })
+            .expect("a sole declared role needs no hint");
+
+        assert_eq!(response.vectors.len(), 2);
+        assert_eq!(response.model, "text-embedding-3-small");
+        assert_eq!(
+            *port.seen.lock().unwrap(),
+            vec!["alpha".to_string(), "beta".to_string()],
+            "inputs must reach the port in the order the guest sent them"
+        );
+    }
+
+    #[test]
+    fn embed_refuses_a_role_the_extension_did_not_declare() {
+        let port = Arc::new(RecordingEmbedPort {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut host = embed_host(port);
+
+        let err = host
+            .embed(llm::EmbedRequest {
+                role_hint: Some("flow_editor_composer".to_string()),
+                inputs: vec!["alpha".to_string()],
+            })
+            .expect_err("an undeclared role must be refused");
+
+        assert_eq!(err, "llm role not permitted: flow_editor_composer");
+    }
+
+    #[test]
+    fn embed_refuses_an_empty_batch() {
+        let port = Arc::new(RecordingEmbedPort {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut host = embed_host(port);
+
+        let err = host
+            .embed(llm::EmbedRequest {
+                role_hint: None,
+                inputs: Vec::new(),
+            })
+            .expect_err("an empty batch is a caller bug, not an empty answer");
+
+        assert_eq!(err, "embed: inputs is empty");
+    }
+
+    #[test]
+    fn embed_refuses_more_inputs_than_the_cap() {
+        let port = Arc::new(RecordingEmbedPort {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut host = embed_host(port);
+
+        let inputs = vec!["x".to_string(); MAX_EMBED_INPUTS + 1];
+        let err = host
+            .embed(llm::EmbedRequest {
+                role_hint: None,
+                inputs,
+            })
+            .expect_err("over the count cap must be refused, never truncated");
+
+        assert!(
+            err.contains(&format!("exceeds the {MAX_EMBED_INPUTS} limit")),
+            "error should name the cap, got {err}"
+        );
+    }
+
+    #[test]
+    fn embed_accepts_a_batch_exactly_at_the_cap() {
+        let port = Arc::new(RecordingEmbedPort {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut host = embed_host(port);
+
+        let inputs = vec!["x".to_string(); MAX_EMBED_INPUTS];
+        let response = host
+            .embed(llm::EmbedRequest {
+                role_hint: None,
+                inputs,
+            })
+            .expect("the cap is inclusive");
+
+        assert_eq!(response.vectors.len(), MAX_EMBED_INPUTS);
+    }
+
+    #[test]
+    fn embed_refuses_a_batch_over_the_byte_cap() {
+        let port = Arc::new(RecordingEmbedPort {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut host = embed_host(port);
+
+        // Two inputs whose combined length exceeds the byte cap while staying
+        // under the count cap, so this test pins the byte cap and not the other.
+        let half = "y".repeat(MAX_EMBED_BYTES / 2 + 1);
+        let err = host
+            .embed(llm::EmbedRequest {
+                role_hint: None,
+                inputs: vec![half.clone(), half],
+            })
+            .expect_err("over the byte cap must be refused");
+
+        assert!(
+            err.contains(&format!("exceeds the {MAX_EMBED_BYTES} limit")),
+            "error should name the byte cap, got {err}"
+        );
+    }
+
+    #[test]
+    fn embed_refuses_a_blank_input_and_names_its_index() {
+        let port = Arc::new(RecordingEmbedPort {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut host = embed_host(port);
+
+        let err = host
+            .embed(llm::EmbedRequest {
+                role_hint: None,
+                inputs: vec!["alpha".to_string(), "   ".to_string()],
+            })
+            .expect_err("a blank input would be a provider 400 the guest cannot act on");
+
+        assert_eq!(err, "embed: inputs[1] is empty");
+    }
+
+    #[test]
+    fn embed_reports_no_llm_port_as_not_configured() {
+        let mut host = HostState::builder(
+            "test-ext".to_string(),
+            perms_with_roles(&["agentic_worker_composer"]),
+        )
+        .build();
+
+        let err = host
+            .embed(llm::EmbedRequest {
+                role_hint: None,
+                inputs: vec!["alpha".to_string()],
+            })
+            .expect_err("no port means not configured");
+
+        assert_eq!(err, "llm not configured for this runtime");
     }
 }
