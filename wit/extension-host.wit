@@ -75,6 +75,25 @@ interface llm {
     total-tokens: option<u32>,
   }
   complete: func(request: llm-request) -> result<llm-response, string>;
+
+  record embed-request {
+    /// Same rule as `llm-request.role-hint`: a role the extension declared in
+    /// `describe.runtime.permissions.llmRoles`. Pass `none` when exactly one
+    /// role is declared.
+    role-hint: option<string>,
+    /// Texts to embed. The host caps both the count and the total size and
+    /// refuses an over-cap batch rather than truncating it.
+    inputs: list<string>,
+  }
+  record embed-response {
+    /// One vector per input, in input order.
+    vectors: list<list<f32>>,
+    /// The model the host actually used. Key your vector store on this —
+    /// vectors from two models are not comparable, so an index built under a
+    /// model the host has since moved off will silently lose recall.
+    model: string,
+  }
+  embed: func(request: embed-request) -> result<embed-response, string>;
 }
 
 world extension-host-world {
