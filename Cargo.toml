@@ -87,7 +87,7 @@ features = [
 ]
 
 [workspace.dependencies.ed25519-dalek]
-version = "2.1"
+version = "3.0"
 features = [
     "serde",
     "rand_core",
