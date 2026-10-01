@@ -1382,9 +1382,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-extension-sdk-contract"
-version = "1.2.24-dev.36607910274"
+version = "1.2.24-dev.36716739437"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3c84d04927480d6daa850e23429fd23438ec2311de11493b7e96c5d52bb3e6b"
+checksum = "f93f60eaf1b6b7feb371a93d8eac254a7a7e7a93060378ce1121216755e532d3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1403,9 +1403,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-extension-sdk-registry"
-version = "1.2.24-dev.36607910274"
+version = "1.2.24-dev.36716739437"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c561084eb9c21cc8a984ac3ae0235e1b21256e8ac24b60a02e27ec128ae07cd"
+checksum = "52620a9be338dea34a3a5804a9cbdb0357a256271ddaed855771f303765de7b7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1434,9 +1434,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-extension-sdk-state"
-version = "1.2.24-dev.36607910274"
+version = "1.2.24-dev.36716739437"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28ced06c94bcacd78ae81b3620acb114cc1e62e44a5d078c5fa1814c641e62a5"
+checksum = "2ac99d7191a58d942816b3c0f1f6b939020ad7a3d630e9d54d2122514fdddbc2"
 dependencies = [
  "fs2",
  "semver",
@@ -1447,9 +1447,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-extension-sdk-testing"
-version = "1.2.24-dev.36607910274"
+version = "1.2.24-dev.36716739437"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0098252b4d0ae626d6ec8d8e8a1ad659ac1ff59f8d52675927d875950798aa66"
+checksum = "189d0070db2413b8afe8668695fd7cdecb0e26b45a131cdc10e5fe4d9d78147b"
 dependencies = [
  "anyhow",
  "ciborium",
@@ -1464,9 +1464,9 @@ dependencies = [
 
 [[package]]
 name = "greentic-types"
-version = "1.2.0-dev.36686688698"
+version = "1.2.0-dev.36835683305"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6185057e5d841701eea23c6fca6ae3bdb61cd5106ad625ce3d1c82f5a0188769"
+checksum = "3b1080bf525a541d8156aadb2955519f1b2043a05dc46950eeb101ed2f362293"
 dependencies = [
  "anyhow",
  "blake3",
