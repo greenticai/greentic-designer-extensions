@@ -210,6 +210,7 @@ world design-extension {
   import greentic:extension-host/broker@0.1.0;
   import greentic:extension-host/http@0.1.0;
   import greentic:extension-host/llm@0.1.0;
+  import greentic:extension-host/artifact@0.1.0;
   import greentic:oauth-broker/broker-v1@1.0.0;
 
   export greentic:extension-base/manifest@0.2.0;
