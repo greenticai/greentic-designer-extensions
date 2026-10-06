@@ -22,6 +22,8 @@ mod loaded;
 mod net_permissions;
 pub mod oauth;
 mod runtime;
+#[cfg(test)]
+mod runtime_artifact_tests;
 mod runtime_bundle;
 mod runtime_config;
 mod runtime_deploy;
