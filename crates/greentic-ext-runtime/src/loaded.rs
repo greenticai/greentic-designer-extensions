@@ -47,6 +47,36 @@ pub struct LoadedExtension {
     pub health: ExtensionHealth,
 }
 
+/// Register every host interface a design extension may import.
+///
+/// One function, used by dispatch and by the link tests, so the two cannot
+/// drift: a test that registers a different set than production proves nothing.
+pub(crate) fn add_host_interfaces(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
+    use crate::host_bindings::greentic::extension_host::{
+        broker, http, i18n, llm, logging, secrets,
+    };
+
+    // HasSelf<T> wraps T and implements HasData — required for wasmtime bindgen add_to_linker.
+    logging::add_to_linker::<HostState, HasSelf<HostState>>(linker, |s| s)?;
+    i18n::add_to_linker::<HostState, HasSelf<HostState>>(linker, |s| s)?;
+    secrets::add_to_linker::<HostState, HasSelf<HostState>>(linker, |s| s)?;
+    broker::add_to_linker::<HostState, HasSelf<HostState>>(linker, |s| s)?;
+    http::add_to_linker::<HostState, HasSelf<HostState>>(linker, |s| s)?;
+    llm::add_to_linker::<HostState, HasSelf<HostState>>(linker, |s| s)?;
+    crate::host_bindings::design_v04::greentic::oauth_broker::broker_v1::add_to_linker::<
+        HostState,
+        HasSelf<HostState>,
+    >(linker, |s| s)?;
+    // Generated only for the design@0.4.0 world, like oauth-broker: one
+    // registration in the shared linker covers every component whatever world
+    // version it targets.
+    crate::host_bindings::design_v04::greentic::extension_host::artifact::add_to_linker::<
+        HostState,
+        HasSelf<HostState>,
+    >(linker, |s| s)?;
+    Ok(())
+}
+
 impl LoadedExtension {
     /// Instantiate from the describe the load gate already verified.
     ///
@@ -98,28 +128,15 @@ impl LoadedExtension {
         host_overrides: HostOverrides,
         ctx: &crate::host_ports::HostCallContext,
         dispatch_timeout: Option<std::time::Duration>,
+        artifact_port: Option<Arc<dyn crate::host_ports::ArtifactPort>>,
     ) -> anyhow::Result<(Store<HostState>, Instance)> {
-        use crate::host_bindings::greentic::extension_host::{
-            broker, http, i18n, llm, logging, secrets,
-        };
-
         let mut linker: Linker<HostState> = Linker::new(engine);
 
         // Wire WASI host functions. cargo-component always adds WASI imports to
         // its output even when the Rust source never calls them directly.
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
 
-        // HasSelf<T> wraps T and implements HasData — required for wasmtime 43 bindgen add_to_linker.
-        logging::add_to_linker::<HostState, HasSelf<HostState>>(&mut linker, |s| s)?;
-        i18n::add_to_linker::<HostState, HasSelf<HostState>>(&mut linker, |s| s)?;
-        secrets::add_to_linker::<HostState, HasSelf<HostState>>(&mut linker, |s| s)?;
-        broker::add_to_linker::<HostState, HasSelf<HostState>>(&mut linker, |s| s)?;
-        http::add_to_linker::<HostState, HasSelf<HostState>>(&mut linker, |s| s)?;
-        llm::add_to_linker::<HostState, HasSelf<HostState>>(&mut linker, |s| s)?;
-        crate::host_bindings::design_v04::greentic::oauth_broker::broker_v1::add_to_linker::<
-            HostState,
-            HasSelf<HostState>,
-        >(&mut linker, |s| s)?;
+        add_host_interfaces(&mut linker)?;
 
         // Per-extension network allow-list: when the extension declares
         // `runtime.permissions.network` patterns, those patterns become the
@@ -141,6 +158,7 @@ impl LoadedExtension {
         .http_client(host_overrides.http_client)
         .http_timeout(crate::limits::http_timeout_for(dispatch_timeout))
         .llm_port(host_overrides.llm_port)
+        .artifact_port(artifact_port)
         .call_ctx(ctx.clone())
         .url_matcher(url_matcher)
         .runtime_weak(host_overrides.runtime_weak)
