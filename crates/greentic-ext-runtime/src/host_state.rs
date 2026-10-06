@@ -11,7 +11,7 @@ use std::sync::atomic::AtomicU32;
 use wasmtime::component::ResourceTable;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
-use crate::host_ports::{KeyTranslator, LlmPort, SecretsBackend, Translator};
+use crate::host_ports::{ArtifactPort, KeyTranslator, LlmPort, SecretsBackend, Translator};
 use crate::url_matcher::UrlMatcher;
 use greentic_extension_sdk_contract::describe::Permissions;
 
@@ -37,6 +37,7 @@ pub struct HostState {
     /// thing bounding `host.http.fetch`.
     pub(crate) http_timeout: std::time::Duration,
     pub(crate) llm_port: Option<Arc<dyn LlmPort>>,
+    pub(crate) artifact_port: Option<Arc<dyn ArtifactPort>>,
     /// Per-call caller context for this dispatch (tenant slug + authenticated
     /// user email), threaded from the host's
     /// [`crate::host_ports::HostCallContext`] and forwarded to host ports.
@@ -67,6 +68,7 @@ impl HostState {
             secrets_backend: Arc::new(crate::host_ports::InMemorySecrets::new()),
             http_client: None,
             llm_port: None,
+            artifact_port: None,
             call_ctx: crate::host_ports::HostCallContext::default(),
             url_matcher: UrlMatcher::default(),
             runtime_weak: std::sync::Weak::new(),
@@ -110,6 +112,7 @@ pub struct HostStateBuilder {
     secrets_backend: Arc<dyn SecretsBackend>,
     http_client: Option<reqwest::blocking::Client>,
     llm_port: Option<Arc<dyn LlmPort>>,
+    artifact_port: Option<Arc<dyn ArtifactPort>>,
     call_ctx: crate::host_ports::HostCallContext,
     url_matcher: UrlMatcher,
     runtime_weak: std::sync::Weak<crate::runtime::ExtensionRuntime>,
@@ -149,6 +152,13 @@ impl HostStateBuilder {
     #[must_use]
     pub fn http_timeout(mut self, t: std::time::Duration) -> Self {
         self.http_timeout = t;
+        self
+    }
+
+    /// Supply the host port backing `host.artifact.put`.
+    #[must_use]
+    pub fn artifact_port(mut self, p: Option<Arc<dyn ArtifactPort>>) -> Self {
+        self.artifact_port = p;
         self
     }
 
@@ -202,6 +212,7 @@ impl HostStateBuilder {
             http_client: self.http_client,
             http_timeout: self.http_timeout,
             llm_port: self.llm_port,
+            artifact_port: self.artifact_port,
             call_ctx: self.call_ctx,
             url_matcher: self.url_matcher,
             runtime_weak: self.runtime_weak,
