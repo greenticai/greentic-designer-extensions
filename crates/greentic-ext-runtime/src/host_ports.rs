@@ -195,6 +195,56 @@ pub trait LlmPort: Send + Sync {
     }
 }
 
+/// One file an extension asks the host to store.
+#[derive(Debug, Clone)]
+pub struct ArtifactPutRequest {
+    pub bytes: Vec<u8>,
+    pub mime_type: String,
+    pub name: String,
+}
+
+/// Why an [`ArtifactPort::put`] failed. The variants map one-to-one onto the
+/// WIT `artifact-error`; `Unavailable` carries detail for the host log only.
+#[derive(Debug, thiserror::Error)]
+pub enum ArtifactPortError {
+    /// This host wires no artifact store. Nothing failed: the capability is
+    /// absent.
+    #[error("artifact store not supported by this host")]
+    Unsupported,
+    /// The store refused the media type.
+    #[error("media type not accepted")]
+    InvalidMediaType,
+    /// The tenant's byte quota is exhausted.
+    #[error("artifact quota exceeded")]
+    QuotaExceeded,
+    /// The store failed or is unreachable. The text is logged, never returned
+    /// to the guest.
+    #[error("artifact store unavailable: {0}")]
+    Unavailable(String),
+}
+
+/// Host port for storing extension-produced files, implemented by the
+/// embedding host (the designer maps it onto its per-tenant artifact store).
+/// Synchronous on purpose: wasmtime host fns are wired with the sync linker.
+pub trait ArtifactPort: Send + Sync {
+    /// Store `request` for the tenant in `ctx` and return the `artifact://` id.
+    ///
+    /// `ctx.tenant` is guaranteed non-blank by the caller
+    /// ([`crate::host_state_artifact`]); a port must still never widen a read
+    /// or write beyond that tenant.
+    ///
+    /// The default body returns [`ArtifactPortError::Unsupported`] so a host
+    /// that has not wired a store keeps compiling.
+    fn put(
+        &self,
+        _extension_id: &str,
+        _ctx: &HostCallContext,
+        _request: ArtifactPutRequest,
+    ) -> Result<String, ArtifactPortError> {
+        Err(ArtifactPortError::Unsupported)
+    }
+}
+
 /// Per-invocation caller context threaded from the embedding host into
 /// host-port calls. Extend cautiously: every field is visible to all ports.
 #[derive(Debug, Clone, Default)]
@@ -282,5 +332,31 @@ mod embed_default_tests {
             "expected Unsupported, got {err:?}"
         );
         assert_eq!(err.to_string(), "embeddings not supported by this host");
+    }
+}
+
+#[cfg(test)]
+mod artifact_default_tests {
+    use super::*;
+
+    /// A host that wires no artifact store must report the honest reason.
+    struct NoStore;
+    impl ArtifactPort for NoStore {}
+
+    #[test]
+    fn a_port_that_overrides_nothing_reports_unsupported() {
+        let err = NoStore
+            .put(
+                "ext.demo",
+                &HostCallContext::default(),
+                ArtifactPutRequest {
+                    bytes: vec![1],
+                    mime_type: "image/png".to_string(),
+                    name: "a.png".to_string(),
+                },
+            )
+            .expect_err("a default port must not claim to store");
+        assert!(matches!(err, ArtifactPortError::Unsupported), "got {err:?}");
+        assert_eq!(err.to_string(), "artifact store not supported by this host");
     }
 }
