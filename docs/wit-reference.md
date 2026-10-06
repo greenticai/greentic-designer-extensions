@@ -319,6 +319,51 @@ interface http {
 **`fetch`** — Send an HTTP request. Returns `Err` if the URL's origin is not
 in the allowlist or if a network error occurs. Only HTTPS is permitted.
 
+### `greentic:extension-host/artifact`
+
+Store a file the extension produced (image, PDF, CSV, ...) and get back an
+opaque id. **Bytes in, id out: never put bytes in a tool result.** Return the
+`artifact://` id in the result instead. Imported by the
+`design-extension@0.4.0` world only.
+
+```wit
+interface artifact {
+  variant artifact-error {
+    unsupported,
+    tenant-required,
+    invalid-size,
+    invalid-input(string),
+    unsupported-media-type,
+    quota-exceeded,
+    unavailable,
+  }
+  put: func(bytes: list<u8>, mime-type: string, name: string)
+    -> result<string, artifact-error>;
+}
+```
+
+**`put`** — Store `bytes` for the calling tenant and return the `artifact://`
+id. The tenant comes from the host call context, never from the guest.
+
+| `artifact-error` | Meaning |
+|---|---|
+| `unsupported` | The host wires no artifact store (no port installed). |
+| `tenant-required` | The call carried no tenant; nothing is stored without one. |
+| `invalid-size` | Empty, or over 10 MiB (refused, never truncated). |
+| `invalid-input(msg)` | `name` or `mime-type` failed validation. |
+| `unsupported-media-type` | The store refused the media type. |
+| `quota-exceeded` | The tenant's byte quota is exhausted. |
+| `unavailable` | The store failed; detail is logged host-side only. |
+
+`name` must be non-blank, at most 255 bytes, with no `/`, `\` or control
+characters. `mime-type` must be a bare `type/subtype` (at most 127 bytes; no
+parameters, whitespace or control characters). The name check is minimal: it
+accepts `.`, `..` and Unicode bidi/format characters, so a consumer that uses
+the name as a file name must sanitize it.
+
+A component importing `artifact` fails to instantiate on a host that predates
+the interface; one that does not import it is unaffected.
+
 ---
 
 ## `greentic:extension-design@0.1.0`

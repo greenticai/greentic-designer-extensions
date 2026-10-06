@@ -108,6 +108,15 @@ A list of extension kinds this extension may call via the broker. Valid
 values: `"design"`, `"bundle"`, `"deploy"`. An empty list (or omitted
 field) means the extension cannot call any other extension.
 
+### `artifact` (not a permission field)
+
+`host.artifact.put` is not gated by a `describe.runtime.permissions` field in
+this release. It is gated by the host installing an artifact port
+(`ExtensionRuntime::with_artifact_port`; without one `put` answers
+`unsupported`) and by the call carrying a tenant (`tenant-required`
+otherwise). A permission field is a possible follow-up and needs an
+SDK-contract release because `Permissions` is `deny_unknown_fields`.
+
 ---
 
 ## Default-Deny Semantics

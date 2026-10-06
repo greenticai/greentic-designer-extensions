@@ -110,6 +110,36 @@ be walked around entirely, which is why the security list below reads as pairs.
 
 ## [Unreleased]
 
+### Added
+
+- **`host.artifact.put` (`greentic:extension-host/artifact@0.1.0`).** A design
+  extension can store a file (image, PDF, CSV, ...) through the host and get an
+  opaque `artifact://` id to return in its tool result; bytes never travel in a
+  tool result. Imported by the `design-extension@0.4.0` world. The host side is
+  the new `ArtifactPort` trait (default `Unsupported`), installed with
+  `ExtensionRuntime::with_artifact_port`. Checks, made once in the host before
+  the port is called: a non-blank tenant from the host call context (the guest
+  cannot supply one), 1 byte to 10 MiB per call (an over-cap payload is
+  refused, never truncated), `name` (non-blank, at most 255 bytes, no `/`, `\`
+  or control characters) and `mime-type` (a bare `type/subtype`, at most 127
+  bytes, no whitespace, `;` or control characters). The port's own failures map
+  onto `artifact-error`; the detail of an `unavailable` failure is logged
+  host-side and never returned to the guest. No new `describe` permission
+  field: access is gated by the host installing a port.
+
+  **Compatibility:** a component that imports `artifact` (any built against the
+  new `design-extension@0.4.0` world) **fails to instantiate on a host that
+  predates the interface** (link error naming
+  `greentic:extension-host/artifact`). A component that does not import it is
+  unaffected. On a host with the interface but no port installed, `put`
+  answers `unsupported`. `HostOverrides` is unchanged; the port is installed
+  with `ExtensionRuntime::with_artifact_port`, so no embedder that builds
+  `HostOverrides` with a literal breaks.
+
+  **Consumers must sanitize `name`.** The host's name check is minimal: it
+  accepts `.` and `..` and Unicode bidi/format characters. Anything that uses
+  the name as a file name or displays it must sanitize it itself.
+
 ### Changed
 
 - **Unified 6-variant `extension-error` WIT contract with host dual-support.**
