@@ -355,14 +355,22 @@ id. The tenant comes from the host call context, never from the guest.
 | `quota-exceeded` | The tenant's byte quota is exhausted. |
 | `unavailable` | The store failed; detail is logged host-side only. |
 
-`name` must be non-blank, at most 255 bytes, with no `/`, `\` or control
-characters. `mime-type` must be a bare `type/subtype` (at most 127 bytes; no
-parameters, whitespace or control characters). The name check is minimal: it
-accepts `.`, `..` and Unicode bidi/format characters, so a consumer that uses
-the name as a file name must sanitize it.
+The tenant and shape checks (size, `name`, `mime-type`) run BEFORE the port
+lookup, so with no port installed a call with no tenant answers
+`tenant-required` and one with a bad name answers `invalid-input`, not
+`unsupported`. A port that returns an id not starting with `artifact://` is
+reported as `unavailable`.
 
-A component importing `artifact` fails to instantiate on a host that predates
-the interface; one that does not import it is unaffected.
+`name` must be non-blank, at most 255 bytes, not exactly `.` or `..`, with no
+`/`, `\`, control characters, or invisible format/bidi characters (U+200B-U+200F,
+U+202A-U+202E, U+2060-U+2064, U+2066-U+2069, U+FEFF). `mime-type` must be a bare `type/subtype` (at most 127 bytes; no
+parameters, whitespace or control characters). A `name` is still guest-chosen
+text: a consumer that uses it as a file name or in a `Content-Disposition`
+header must still treat it as untrusted.
+
+A component that actually imports `artifact` (calls `put`) fails to instantiate
+on a host that predates the interface; one that does not import it is
+unaffected.
 
 ---
 

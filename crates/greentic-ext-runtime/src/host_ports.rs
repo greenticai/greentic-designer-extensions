@@ -206,6 +206,7 @@ pub struct ArtifactPutRequest {
 /// Why an [`ArtifactPort::put`] failed. The variants map one-to-one onto the
 /// WIT `artifact-error`; `Unavailable` carries detail for the host log only.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ArtifactPortError {
     /// This host wires no artifact store. Nothing failed: the capability is
     /// absent.
@@ -226,11 +227,15 @@ pub enum ArtifactPortError {
 /// Host port for storing extension-produced files, implemented by the
 /// embedding host (the designer maps it onto its per-tenant artifact store).
 /// Synchronous on purpose: wasmtime host fns are wired with the sync linker.
+///
+/// The host applies no timeout to a port call and the wasm epoch deadline
+/// cannot interrupt it, so a port must bound its own call (connect and request
+/// timeouts) or it can stall the dispatch indefinitely.
 pub trait ArtifactPort: Send + Sync {
     /// Store `request` for the tenant in `ctx` and return the `artifact://` id.
     ///
     /// `ctx.tenant` is guaranteed non-blank by the caller
-    /// ([`crate::host_state_artifact`]); a port must still never widen a read
+    /// (`crate::host_state_artifact`); a port must still never widen a read
     /// or write beyond that tenant.
     ///
     /// The default body returns [`ArtifactPortError::Unsupported`] so a host

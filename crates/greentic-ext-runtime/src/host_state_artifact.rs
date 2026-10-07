@@ -8,11 +8,27 @@ use crate::host_state::HostState;
 pub(crate) const MAX_ARTIFACT_BYTES: usize = 10 * 1024 * 1024;
 /// Longest accepted `name`, in bytes.
 pub(crate) const MAX_ARTIFACT_NAME_BYTES: usize = 255;
+/// Scheme every id a port returns must carry.
+const ARTIFACT_ID_PREFIX: &str = "artifact://";
 /// Longest accepted `mime-type`, in bytes.
 pub(crate) const MAX_MIME_BYTES: usize = 127;
 
 fn invalid(field: &str, why: &str) -> ArtifactError {
     ArtifactError::InvalidInput(format!("{field}: {why}"))
+}
+
+/// Zero-width, directional-mark, bidi-embedding/isolate, invisible-operator and
+/// BOM characters. Published as part of the `put` contract: widening it later
+/// would be a behaviour change for guests.
+fn is_format_or_bidi(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
 }
 
 fn check_name(name: &str) -> Result<(), ArtifactError> {
@@ -23,15 +39,21 @@ fn check_name(name: &str) -> Result<(), ArtifactError> {
         return Err(invalid("name", "is too long"));
     }
     // The name is shown to users and used as a file name downstream: no path
-    // separators and no control characters (NUL and newlines included).
+    // separators, no control characters (NUL and newlines included) and no
+    // invisible format/bidi characters (category Cf, which `is_control` does
+    // not cover) that could disguise an extension or reorder the text.
     if name
         .chars()
-        .any(|c| c == '/' || c == '\\' || c.is_control())
+        .any(|c| c == '/' || c == '\\' || c.is_control() || is_format_or_bidi(c))
     {
         return Err(invalid(
             "name",
-            "contains a path separator or control character",
+            "contains a path separator, control or invisible format character",
         ));
+    }
+    // Relative path components are never a file name.
+    if name == "." || name == ".." {
+        return Err(invalid("name", "is a relative path component"));
     }
     Ok(())
 }
@@ -96,7 +118,12 @@ impl artifact::Host for HostState {
                 name,
             },
         ) {
-            Ok(id) => Ok(id),
+            Ok(id) if id.starts_with(ARTIFACT_ID_PREFIX) => Ok(id),
+            Ok(id) => {
+                // A port bug, not a guest fault. Log it, never hand it over.
+                tracing::warn!(ext = %self.extension_id, id = %id, "artifact port returned a malformed id");
+                Err(ArtifactError::Unavailable)
+            }
             Err(ArtifactPortError::Unsupported) => Err(ArtifactError::Unsupported),
             Err(ArtifactPortError::InvalidMediaType) => Err(ArtifactError::UnsupportedMediaType),
             Err(ArtifactPortError::QuotaExceeded) => Err(ArtifactError::QuotaExceeded),
@@ -238,6 +265,17 @@ mod tests {
             "a\\b.png",
             "a\0b",
             "a\nb.png",
+            ".",
+            "..",
+            "a\u{200B}b.png",
+            "a\u{200D}b.png",
+            "a\u{200E}b.png",
+            "a\u{202E}gnp.exe",
+            "a\u{2060}b",
+            "a\u{2064}b",
+            "a\u{2066}b",
+            "a\u{2069}b",
+            "\u{FEFF}a.png",
             long.as_str(),
         ] {
             let err = put(&mut h, vec![1], "image/png", name).unwrap_err();
@@ -261,6 +299,54 @@ mod tests {
             );
         }
         assert!(port.seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn ordinary_names_are_accepted() {
+        let port = Arc::new(Recording::default());
+        let mut h = host(Some(port.clone()), Some("acme"));
+        let at_cap = "n".repeat(MAX_ARTIFACT_NAME_BYTES);
+        for name in [
+            "cat.png",
+            "my cat.png",
+            "caf\u{e9}.png",
+            "\u{732b}.png",
+            "...",
+            ".hidden",
+            at_cap.as_str(),
+        ] {
+            put(&mut h, vec![1], "image/png", name)
+                .unwrap_or_else(|e| panic!("name {name:?} must be accepted, got {e:?}"));
+        }
+    }
+
+    #[test]
+    fn a_port_returning_a_malformed_id_is_unavailable_and_never_reaches_the_guest() {
+        struct BadId(&'static str);
+        impl ArtifactPort for BadId {
+            fn put(
+                &self,
+                _: &str,
+                _: &HostCallContext,
+                _: ArtifactPutRequest,
+            ) -> Result<String, ArtifactPortError> {
+                Ok(self.0.to_string())
+            }
+        }
+        for bad in ["", "https://10.0.0.5/secret", "abc"] {
+            let mut h = crate::HostState::builder("test-ext".into(), Permissions::default())
+                .call_ctx(HostCallContext {
+                    tenant: Some("acme".into()),
+                    user_email: None,
+                })
+                .artifact_port(Some(Arc::new(BadId(bad)) as Arc<dyn ArtifactPort>))
+                .build();
+            let err = put(&mut h, vec![1], "image/png", "a.png").unwrap_err();
+            assert!(
+                matches!(err, ArtifactError::Unavailable),
+                "{bad:?} -> {err:?}"
+            );
+        }
     }
 
     #[test]

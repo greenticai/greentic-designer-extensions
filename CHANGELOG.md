@@ -127,18 +127,23 @@ be walked around entirely, which is why the security list below reads as pairs.
   host-side and never returned to the guest. No new `describe` permission
   field: access is gated by the host installing a port.
 
-  **Compatibility:** a component that imports `artifact` (any built against the
-  new `design-extension@0.4.0` world) **fails to instantiate on a host that
-  predates the interface** (link error naming
-  `greentic:extension-host/artifact`). A component that does not import it is
-  unaffected. On a host with the interface but no port installed, `put`
+  **Compatibility:** only a component that actually imports `artifact` (one
+  that calls `put`) **fails to instantiate on a host that predates the
+  interface** (link error naming `greentic:extension-host/artifact`). A
+  component merely rebuilt against the new `design-extension@0.4.0` world
+  should not import it, because wit-component drops unused imports; that is the
+  expected behavior, not verified for every toolchain. A component that does
+  not import it is unaffected. On a host with the interface but no port installed, `put`
   answers `unsupported`. `HostOverrides` is unchanged; the port is installed
   with `ExtensionRuntime::with_artifact_port`, so no embedder that builds
   `HostOverrides` with a literal breaks.
 
-  **Consumers must sanitize `name`.** The host's name check is minimal: it
-  accepts `.` and `..` and Unicode bidi/format characters. Anything that uses
-  the name as a file name or displays it must sanitize it itself.
+  **A `name` is still untrusted text.** The host refuses path separators
+  (`/`, `\`), control characters, exactly `.` and `..`, and the invisible
+  format/bidi characters U+200B-U+200F, U+202A-U+202E, U+2060-U+2064,
+  U+2066-U+2069 and U+FEFF. It is nonetheless guest-chosen: a consumer that
+  uses it as a file name or in a `Content-Disposition` header must still treat
+  it as untrusted.
 
 ### Changed
 
