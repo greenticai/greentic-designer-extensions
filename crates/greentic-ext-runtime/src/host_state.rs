@@ -141,7 +141,10 @@ impl HostStateBuilder {
     /// be walked off the allow-list by an allowed host. `host.http.fetch`
     /// re-checks the final URL and refuses a response that landed off-list, but
     /// a host that wants the request never to leave the list at all should pass
-    /// a client built with `redirect::Policy::none()`.
+    /// a client built with `redirect::Policy::none()`. Such a client also
+    /// gets the host's per-hop header policy (credential headers such as
+    /// `X-Api-Key` dropped on a cross-origin hop, not only the ones reqwest
+    /// strips itself).
     #[must_use]
     pub fn http_client(mut self, c: Option<reqwest::blocking::Client>) -> Self {
         self.http_client = c;

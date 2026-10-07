@@ -319,6 +319,26 @@ interface http {
 **`fetch`** — Send an HTTP request. Returns `Err` if the URL's origin is not
 in the allowlist or if a network error occurs. Only HTTPS is permitted.
 
+**Redirects.** The host follows up to 10 redirects itself and re-checks the
+allowlist before every hop; a hop off the list fails the call with `Err` and
+the off-list host is never contacted. What each hop sends:
+
+| Redirect | Method and body on the next hop |
+|---|---|
+| 301, 302, 303 after a method other than GET/HEAD | becomes `GET` with no body; `Content-Type`, `Content-Length`, `Content-Encoding`, `Content-Language` are dropped |
+| 301, 302, 303 after GET/HEAD | unchanged |
+| 307, 308 | method, body and body headers kept |
+
+When a hop goes to a different **origin** (scheme, host or port differs from
+the hop before it), the credential headers are dropped and stay dropped for
+the rest of the chain, even if a later hop returns to the first origin:
+`Authorization`, `Proxy-Authorization`, `Cookie`, `Cookie2`,
+`WWW-Authenticate`, `X-Api-Key`, `Api-Key`, `X-Auth-Token`,
+`X-Goog-Api-Key` (names matched case-insensitively). A same-origin redirect
+keeps them. Other guest-set headers are kept on every hop. A guest whose API
+redirects to another origin that genuinely needs the credential must call that
+URL itself with the header set.
+
 ### `greentic:extension-host/artifact`
 
 Store a file the extension produced (image, PDF, CSV, ...) and get back an

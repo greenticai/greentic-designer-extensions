@@ -145,6 +145,23 @@ be walked around entirely, which is why the security list below reads as pairs.
   uses it as a file name or in a `Content-Disposition` header must still treat
   it as untrusted.
 
+### Fixed (security)
+
+- **`host.http.fetch` resent credentials and write bodies on every redirect
+  hop.** The host follows redirects itself (to re-check the allow-list per
+  hop) but sent each hop the guest's original headers and body. An
+  `Authorization` key for one API therefore reached whatever origin it
+  redirected to (for example a CDN host the allow-list also admits), and a
+  POST body was re-sent on 301/302/303. Now a hop to a different origin
+  (scheme, host or port) drops `Authorization`, `Proxy-Authorization`,
+  `Cookie`, `Cookie2`, `WWW-Authenticate`, `X-Api-Key`, `Api-Key`,
+  `X-Auth-Token` and `X-Goog-Api-Key` (case-insensitive) for the rest of the
+  chain; a 301/302/303 after a method other than GET/HEAD becomes a body-less
+  GET without body headers; 307/308 keep method and body. Same-origin hops
+  keep their headers. The per-hop allow-list check and the 10-hop limit are
+  unchanged. **Behaviour change:** a guest that relied on its credential
+  following a cross-origin redirect must now call the target URL itself.
+
 ### Changed
 
 - **Unified 6-variant `extension-error` WIT contract with host dual-support.**
