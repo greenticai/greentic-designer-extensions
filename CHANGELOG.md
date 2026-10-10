@@ -110,6 +110,58 @@ be walked around entirely, which is why the security list below reads as pairs.
 
 ## [Unreleased]
 
+### Added
+
+- **`host.artifact.put` (`greentic:extension-host/artifact@0.1.0`).** A design
+  extension can store a file (image, PDF, CSV, ...) through the host and get an
+  opaque `artifact://` id to return in its tool result; bytes never travel in a
+  tool result. Imported by the `design-extension@0.4.0` world. The host side is
+  the new `ArtifactPort` trait (default `Unsupported`), installed with
+  `ExtensionRuntime::with_artifact_port`. Checks, made once in the host before
+  the port is called: a non-blank tenant from the host call context (the guest
+  cannot supply one), 1 byte to 10 MiB per call (an over-cap payload is
+  refused, never truncated), `name` (non-blank, at most 255 bytes, no `/`, `\`
+  or control characters) and `mime-type` (a bare `type/subtype`, at most 127
+  bytes, no whitespace, `;` or control characters). The port's own failures map
+  onto `artifact-error`; the detail of an `unavailable` failure is logged
+  host-side and never returned to the guest. No new `describe` permission
+  field: access is gated by the host installing a port.
+
+  **Compatibility:** only a component that actually imports `artifact` (one
+  that calls `put`) **fails to instantiate on a host that predates the
+  interface** (link error naming `greentic:extension-host/artifact`). A
+  component merely rebuilt against the new `design-extension@0.4.0` world
+  should not import it, because wit-component drops unused imports; that is the
+  expected behavior, not verified for every toolchain. A component that does
+  not import it is unaffected. On a host with the interface but no port installed, `put`
+  answers `unsupported`. `HostOverrides` is unchanged; the port is installed
+  with `ExtensionRuntime::with_artifact_port`, so no embedder that builds
+  `HostOverrides` with a literal breaks.
+
+  **A `name` is still untrusted text.** The host refuses path separators
+  (`/`, `\`), control characters, exactly `.` and `..`, and the invisible
+  format/bidi characters U+200B-U+200F, U+202A-U+202E, U+2060-U+2064,
+  U+2066-U+2069 and U+FEFF. It is nonetheless guest-chosen: a consumer that
+  uses it as a file name or in a `Content-Disposition` header must still treat
+  it as untrusted.
+
+### Fixed (security)
+
+- **`host.http.fetch` resent credentials and write bodies on every redirect
+  hop.** The host follows redirects itself (to re-check the allow-list per
+  hop) but sent each hop the guest's original headers and body. An
+  `Authorization` key for one API therefore reached whatever origin it
+  redirected to (for example a CDN host the allow-list also admits), and a
+  POST body was re-sent on 301/302/303. Now a hop to a different origin
+  (scheme, host or port) drops `Authorization`, `Proxy-Authorization`,
+  `Cookie`, `Cookie2`, `WWW-Authenticate`, `X-Api-Key`, `Api-Key`,
+  `X-Auth-Token` and `X-Goog-Api-Key` (case-insensitive) for the rest of the
+  chain; a 301/302/303 after a method other than GET/HEAD becomes a body-less
+  GET without body headers; 307/308 keep method and body. Same-origin hops
+  keep their headers. The per-hop allow-list check and the 10-hop limit are
+  unchanged. **Behaviour change:** a guest that relied on its credential
+  following a cross-origin redirect must now call the target URL itself.
+
 ### Changed
 
 - **Unified 6-variant `extension-error` WIT contract with host dual-support.**

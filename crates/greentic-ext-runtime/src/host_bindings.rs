@@ -136,3 +136,12 @@ pub mod sorx {
         world: "greentic:extension-sorx/sorx-runtime-extension",
     });
 }
+
+/// Registers the production host interfaces on `linker`. Exists so integration
+/// tests link against exactly what dispatch links against; not for embedders.
+#[doc(hidden)]
+pub fn register_host_interfaces_for_tests(
+    linker: &mut wasmtime::component::Linker<crate::HostState>,
+) -> anyhow::Result<()> {
+    crate::loaded::add_host_interfaces(linker)
+}

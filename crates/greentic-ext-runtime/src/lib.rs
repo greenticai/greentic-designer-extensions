@@ -11,6 +11,7 @@ mod health;
 pub mod host_bindings;
 pub mod host_ports;
 mod host_state;
+mod host_state_artifact;
 mod host_state_llm;
 mod host_state_net;
 mod host_state_oauth;
@@ -21,6 +22,8 @@ mod loaded;
 mod net_permissions;
 pub mod oauth;
 mod runtime;
+#[cfg(test)]
+mod runtime_artifact_tests;
 mod runtime_bundle;
 mod runtime_config;
 mod runtime_deploy;

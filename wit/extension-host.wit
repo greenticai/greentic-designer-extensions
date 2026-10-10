@@ -96,6 +96,33 @@ interface llm {
   embed: func(request: embed-request) -> result<embed-response, string>;
 }
 
+/// Host interface for storing a file the extension produced (an image, a PDF,
+/// a CSV, ...). The host stores the bytes under the caller's tenant and returns
+/// an opaque `artifact://` id that the extension puts in its tool result.
+/// Bytes never travel in a tool result: `invoke-tool` returns a string.
+interface artifact {
+  variant artifact-error {
+    /// This host does not wire an artifact store.
+    unsupported,
+    /// The call carried no tenant; nothing is stored without one.
+    tenant-required,
+    /// Over the per-file cap (10 MiB) or empty.
+    invalid-size,
+    /// `name` or `mime-type` failed validation (blank, control chars, path
+    /// separators, too long).
+    invalid-input(string),
+    /// The store refused the media type (not on the host's allow-list).
+    unsupported-media-type,
+    /// The tenant's byte quota is exhausted.
+    quota-exceeded,
+    /// The store is unreachable or failed. Detail is logged host-side, never
+    /// returned: it can name internal hosts.
+    unavailable,
+  }
+  /// Store `bytes` and return the `artifact://` id.
+  put: func(bytes: list<u8>, mime-type: string, name: string) -> result<string, artifact-error>;
+}
+
 world extension-host-world {
   import logging;
   import i18n;
@@ -103,4 +130,5 @@ world extension-host-world {
   import broker;
   import http;
   import llm;
+  import artifact;
 }

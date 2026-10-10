@@ -50,6 +50,8 @@ pub struct ExtensionRuntime {
     /// wholesale rebuild exists to prevent.
     write_lock: std::sync::Mutex<()>,
     events: broadcast::Sender<RuntimeEvent>,
+    /// Backs `host.artifact.put`; `None` means `put` answers `unsupported`.
+    artifact_port: Option<std::sync::Arc<dyn crate::host_ports::ArtifactPort>>,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +137,7 @@ impl ExtensionRuntime {
             _epoch_ticker: epoch_ticker,
             write_lock: std::sync::Mutex::new(()),
             events: tx,
+            artifact_port: None,
         })
     }
 
@@ -179,6 +182,20 @@ impl ExtensionRuntime {
     #[must_use]
     pub fn with_host_overrides(mut self, host_overrides: HostOverrides) -> Self {
         self.config.host_overrides = host_overrides;
+        self
+    }
+
+    /// Install the port backing `host.artifact.put` for every dispatch.
+    ///
+    /// A separate builder, not a `HostOverrides` field: adding a public field
+    /// there breaks every embedder that builds the struct with a literal.
+    /// Without this call, `put` answers `unsupported`.
+    #[must_use]
+    pub fn with_artifact_port(
+        mut self,
+        port: std::sync::Arc<dyn crate::host_ports::ArtifactPort>,
+    ) -> Self {
+        self.artifact_port = Some(port);
         self
     }
 
@@ -274,6 +291,7 @@ impl ExtensionRuntime {
                 self.config.host_overrides.clone(),
                 ctx,
                 self.config.dispatch_timeout,
+                self.artifact_port.clone(),
             )
             .map_err(RuntimeError::Wasmtime)
     }

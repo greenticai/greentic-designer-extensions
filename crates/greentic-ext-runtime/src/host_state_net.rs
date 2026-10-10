@@ -59,6 +59,77 @@ const FORBIDDEN_REQUEST_HEADERS: [&str; 6] = [
     "expect",
 ];
 
+/// Request headers that carry a credential, dropped when a redirect leaves the
+/// origin the request was sent to.
+///
+/// The guest scopes a credential to the URL it asked for: an API key for
+/// `fal.run` must not reach the CDN host `fal.run` redirects to, which the
+/// allow-list may well admit (it gates where a request may go, not what it may
+/// carry). reqwest and browsers strip the first five; the rest are the
+/// API-key headers providers commonly use. Matched case-insensitively.
+const CREDENTIAL_REQUEST_HEADERS: [&str; 9] = [
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "cookie2",
+    "www-authenticate",
+    "x-api-key",
+    "api-key",
+    "x-auth-token",
+    "x-goog-api-key",
+];
+
+/// Body-describing headers dropped when a redirect turns a request into a
+/// body-less GET. (`content-length` is already refused by
+/// [`FORBIDDEN_REQUEST_HEADERS`]; it is listed so this rule stands alone.)
+const BODY_REQUEST_HEADERS: [&str; 4] = [
+    "content-type",
+    "content-length",
+    "content-encoding",
+    "content-language",
+];
+
+fn drop_headers(headers: &mut Vec<(String, String)>, names: &[&str]) {
+    headers.retain(|(k, _)| !names.iter().any(|n| k.eq_ignore_ascii_case(n)));
+}
+
+/// Scheme, host and effective port: two URLs are one origin iff these agree.
+fn same_origin(a: &url::Url, b: &url::Url) -> bool {
+    a.scheme() == b.scheme()
+        && a.host_str() == b.host_str()
+        && a.port_or_known_default() == b.port_or_known_default()
+}
+
+/// What the next hop sends, given the hop that answered with `status`.
+///
+/// - 301/302/303 after anything but GET/HEAD become a GET with no body and no
+///   body-describing headers (what browsers and reqwest do; resending a POST
+///   body to wherever a 302 points is how a write lands somewhere unintended).
+/// - 307/308 keep method and body: that is what those codes mean.
+/// - Leaving the origin drops every credential header, for good — a later hop
+///   back to the first origin does not restore them.
+struct Hop {
+    method: reqwest::Method,
+    headers: Vec<(String, String)>,
+    body: Option<Vec<u8>>,
+}
+
+impl Hop {
+    fn follow(&mut self, status: reqwest::StatusCode, from: &url::Url, to: &url::Url) {
+        let rewrites_to_get = matches!(status.as_u16(), 301..=303)
+            && self.method != reqwest::Method::GET
+            && self.method != reqwest::Method::HEAD;
+        if rewrites_to_get {
+            self.method = reqwest::Method::GET;
+            self.body = None;
+            drop_headers(&mut self.headers, &BODY_REQUEST_HEADERS);
+        }
+        if !same_origin(from, to) {
+            drop_headers(&mut self.headers, &CREDENTIAL_REQUEST_HEADERS);
+        }
+    }
+}
+
 /// The `Location` of a redirect response, resolved against the request URL.
 fn redirect_target(resp: &reqwest::blocking::Response) -> Option<url::Url> {
     if !resp.status().is_redirection() {
@@ -77,13 +148,11 @@ impl HostState {
     fn send_once(
         &self,
         client: &reqwest::blocking::Client,
-        method: reqwest::Method,
         url: &str,
-        headers: &[(String, String)],
-        body: Option<Vec<u8>>,
+        hop: &Hop,
     ) -> Result<reqwest::blocking::Response, String> {
-        let mut builder = client.request(method, url);
-        for (k, v) in headers {
+        let mut builder = client.request(hop.method.clone(), url);
+        for (k, v) in &hop.headers {
             if FORBIDDEN_REQUEST_HEADERS
                 .iter()
                 .any(|h| k.eq_ignore_ascii_case(h))
@@ -97,8 +166,8 @@ impl HostState {
             }
             builder = builder.header(k.as_str(), v.as_str());
         }
-        if let Some(body) = body {
-            builder = builder.body(body);
+        if let Some(body) = &hop.body {
+            builder = builder.body(body.clone());
         }
         // The wasm deadline is evaluated only by running wasm, so it cannot
         // fire while this thread is parked in `send()`. Without a per-request
@@ -109,6 +178,38 @@ impl HostState {
             tracing::error!(ext = %self.extension_id, error = %e, "http::fetch transport error");
             format!("http transport error: {e}")
         })
+    }
+
+    /// Send `hop` to `url`, following up to [`MAX_REDIRECT_HOPS`] redirects.
+    /// Returns the last response and the URL it was requested from.
+    fn send_following_redirects(
+        &self,
+        client: &reqwest::blocking::Client,
+        mut url: String,
+        mut hop: Hop,
+    ) -> Result<(reqwest::blocking::Response, String), String> {
+        let mut resp = self.send_once(client, &url, &hop)?;
+        for _ in 0..MAX_REDIRECT_HOPS {
+            let Some(next) = redirect_target(&resp) else {
+                break;
+            };
+            if !self.url_matcher.is_allowed(next.as_str()) {
+                tracing::warn!(
+                    ext = %self.extension_id,
+                    from = %loggable(&url),
+                    to = %loggable(next.as_str()),
+                    "http::fetch refused a redirect off the allow-list"
+                );
+                return Err(format!(
+                    "network not allowed for redirect target: {}",
+                    loggable(next.as_str())
+                ));
+            }
+            hop.follow(resp.status(), resp.url(), &next);
+            url = next.to_string();
+            resp = self.send_once(client, &url, &hop)?;
+        }
+        Ok((resp, url))
     }
 }
 
@@ -154,29 +255,16 @@ impl http::Host for HostState {
         //    its own — see `HostStateBuilder::http_client`. When it does, we
         //    never see the 3xx, so the end-of-chain check below stays as the
         //    fallback for that case.
-        let mut url = req.url.clone();
-        let mut resp =
-            self.send_once(client, method.clone(), &url, &req.headers, req.body.clone())?;
-
-        for _ in 0..MAX_REDIRECT_HOPS {
-            let Some(next) = redirect_target(&resp) else {
-                break;
-            };
-            if !self.url_matcher.is_allowed(next.as_str()) {
-                tracing::warn!(
-                    ext = %self.extension_id,
-                    from = %loggable(&url),
-                    to = %loggable(next.as_str()),
-                    "http::fetch refused a redirect off the allow-list"
-                );
-                return Err(format!(
-                    "network not allowed for redirect target: {}",
-                    loggable(next.as_str())
-                ));
-            }
-            url = next.to_string();
-            resp = self.send_once(client, method.clone(), &url, &req.headers, req.body.clone())?;
-        }
+        //
+        //    Each hop also decides what it carries forward (see `Hop`): a
+        //    credential header does not follow the request to another origin,
+        //    and a 301/302/303 does not resend a write's body.
+        let hop = Hop {
+            method,
+            headers: req.headers.clone(),
+            body: req.body.clone(),
+        };
+        let (resp, url) = self.send_following_redirects(client, req.url.clone(), hop)?;
 
         // 4. Fallback for a client that followed redirects itself: re-check
         //    where it landed. This withholds the response but cannot unsend the
