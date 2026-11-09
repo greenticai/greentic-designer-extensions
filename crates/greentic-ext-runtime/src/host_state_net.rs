@@ -151,6 +151,7 @@ impl HostState {
         url: &str,
         hop: &Hop,
     ) -> Result<reqwest::blocking::Response, String> {
+        self.check_granted_destination(url)?;
         let mut builder = client.request(hop.method.clone(), url);
         for (k, v) in &hop.headers {
             if FORBIDDEN_REQUEST_HEADERS

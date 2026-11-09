@@ -44,6 +44,11 @@ pub struct HostState {
     /// `Default` (all `None`) when the host runs single-tenant/dev.
     pub(crate) call_ctx: crate::host_ports::HostCallContext,
     pub(crate) url_matcher: UrlMatcher,
+    /// `infra://` tokens the extension declared in `permissions.network`.
+    pub(crate) infra_grants: Vec<crate::infra_grant::KindGrant>,
+    pub(crate) infra_settings: Arc<crate::infra_grant::InfraGrantSettings>,
+    /// Targets granted during THIS dispatch (empty at build time).
+    pub(crate) granted: Vec<crate::infra_grant::GrantedTarget>,
     pub(crate) runtime_weak: std::sync::Weak<crate::runtime::ExtensionRuntime>,
     pub(crate) oauth_config: Option<crate::oauth::OAuthBrokerConfig>,
     /// Store-wide memory/table budget, read back by `Store::limiter`. Lives
@@ -71,6 +76,8 @@ impl HostState {
             artifact_port: None,
             call_ctx: crate::host_ports::HostCallContext::default(),
             url_matcher: UrlMatcher::default(),
+            infra_grants: Vec::new(),
+            infra_settings: Arc::new(crate::infra_grant::InfraGrantSettings::default()),
             runtime_weak: std::sync::Weak::new(),
             call_depth_start: 0,
             oauth_config: None,
@@ -115,6 +122,8 @@ pub struct HostStateBuilder {
     artifact_port: Option<Arc<dyn ArtifactPort>>,
     call_ctx: crate::host_ports::HostCallContext,
     url_matcher: UrlMatcher,
+    infra_grants: Vec<crate::infra_grant::KindGrant>,
+    infra_settings: Arc<crate::infra_grant::InfraGrantSettings>,
     runtime_weak: std::sync::Weak<crate::runtime::ExtensionRuntime>,
     call_depth_start: u32,
     oauth_config: Option<crate::oauth::OAuthBrokerConfig>,
@@ -186,6 +195,18 @@ impl HostStateBuilder {
         self
     }
 
+    /// Declare the `infra://` grants and the runtime-wide grant settings.
+    #[must_use]
+    pub(crate) fn infra_grants(
+        mut self,
+        grants: Vec<crate::infra_grant::KindGrant>,
+        settings: Arc<crate::infra_grant::InfraGrantSettings>,
+    ) -> Self {
+        self.infra_grants = grants;
+        self.infra_settings = settings;
+        self
+    }
+
     #[must_use]
     pub fn runtime_weak(mut self, w: std::sync::Weak<crate::runtime::ExtensionRuntime>) -> Self {
         self.runtime_weak = w;
@@ -218,6 +239,9 @@ impl HostStateBuilder {
             artifact_port: self.artifact_port,
             call_ctx: self.call_ctx,
             url_matcher: self.url_matcher,
+            infra_grants: self.infra_grants,
+            infra_settings: self.infra_settings,
+            granted: Vec::new(),
             runtime_weak: self.runtime_weak,
             oauth_config: self.oauth_config,
             limits: crate::limits::PackLimits::new(),

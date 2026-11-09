@@ -17,6 +17,12 @@ mod host_state_net;
 mod host_state_oauth;
 mod host_state_ports;
 mod http_scheme_policy;
+pub mod infra_grant;
+mod infra_grant_policy;
+#[cfg(test)]
+mod infra_grant_policy_tests;
+#[cfg(test)]
+mod infra_grant_tests;
 mod limits;
 mod loaded;
 mod net_permissions;

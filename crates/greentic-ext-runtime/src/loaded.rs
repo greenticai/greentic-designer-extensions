@@ -129,6 +129,7 @@ impl LoadedExtension {
         ctx: &crate::host_ports::HostCallContext,
         dispatch_timeout: Option<std::time::Duration>,
         artifact_port: Option<Arc<dyn crate::host_ports::ArtifactPort>>,
+        infra_settings: Arc<crate::infra_grant::InfraGrantSettings>,
     ) -> anyhow::Result<(Store<HostState>, Instance)> {
         let mut linker: Linker<HostState> = Linker::new(engine);
 
@@ -144,7 +145,7 @@ impl LoadedExtension {
         // the host-level override is NOT added). When no patterns are
         // declared the host-level override is used unchanged (deny-all by
         // default). See `effective_url_matcher` for the loopback-http rule.
-        let url_matcher = crate::net_permissions::effective_url_matcher(
+        let (url_matcher, infra_grants) = crate::net_permissions::effective_url_matcher_with_grants(
             &self.describe.runtime.permissions.network,
             host_overrides.url_matcher,
         );
@@ -161,6 +162,7 @@ impl LoadedExtension {
         .artifact_port(artifact_port)
         .call_ctx(ctx.clone())
         .url_matcher(url_matcher)
+        .infra_grants(infra_grants, infra_settings)
         .runtime_weak(host_overrides.runtime_weak)
         .call_depth_start(host_overrides.call_depth_start)
         .oauth_config(host_overrides.oauth_config.clone())

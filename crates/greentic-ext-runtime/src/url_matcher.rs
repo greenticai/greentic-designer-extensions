@@ -75,6 +75,19 @@ impl UrlMatcher {
         self
     }
 
+    /// Add one pattern to a matcher already built. Used for the per-dispatch
+    /// infra grant; the caller owns the decision that the pattern is safe.
+    #[must_use]
+    pub fn with_extra_pattern(mut self, pattern: &str) -> Self {
+        if let Some(pp) = Self::parse_pattern(pattern) {
+            self.patterns.push(pp);
+            self.raw.push(pattern.to_string());
+        } else {
+            tracing::warn!(pattern = %pattern, "unparseable extra url pattern; ignoring");
+        }
+        self
+    }
+
     #[must_use]
     pub fn patterns(&self) -> &[String] {
         &self.raw

@@ -52,6 +52,7 @@ pub struct ExtensionRuntime {
     events: broadcast::Sender<RuntimeEvent>,
     /// Backs `host.artifact.put`; `None` means `put` answers `unsupported`.
     artifact_port: Option<std::sync::Arc<dyn crate::host_ports::ArtifactPort>>,
+    infra_grants: std::sync::Arc<crate::infra_grant::InfraGrantSettings>,
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +139,7 @@ impl ExtensionRuntime {
             write_lock: std::sync::Mutex::new(()),
             events: tx,
             artifact_port: None,
+            infra_grants: std::sync::Arc::default(),
         })
     }
 
@@ -182,6 +184,19 @@ impl ExtensionRuntime {
     #[must_use]
     pub fn with_host_overrides(mut self, host_overrides: HostOverrides) -> Self {
         self.config.host_overrides = host_overrides;
+        self
+    }
+
+    /// Configure `infra://` network grants (on by default). Pass
+    /// `InfraGrantSettings::default().enabled(false)` as an operator kill
+    /// switch, or share a `GrantedHosts` with the `PublicOnlyResolver` built
+    /// into the HTTP client so connect-time DNS is filtered too.
+    ///
+    /// A separate builder, not a `HostOverrides` field, for the same reason as
+    /// [`Self::with_artifact_port`].
+    #[must_use]
+    pub fn with_infra_grants(mut self, settings: crate::infra_grant::InfraGrantSettings) -> Self {
+        self.infra_grants = std::sync::Arc::new(settings);
         self
     }
 
@@ -292,6 +307,7 @@ impl ExtensionRuntime {
                 ctx,
                 self.config.dispatch_timeout,
                 self.artifact_port.clone(),
+                self.infra_grants.clone(),
             )
             .map_err(RuntimeError::Wasmtime)
     }
