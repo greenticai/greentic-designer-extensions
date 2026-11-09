@@ -125,6 +125,30 @@ pub(crate) fn effective_url_matcher(
     crate::url_matcher::UrlMatcher::from_patterns(patterns).with_allow_http(allow_loopback_http)
 }
 
+/// [`effective_url_matcher`] plus the `infra://` grants the extension declared.
+///
+/// Grant tokens never reach the URL matcher. They are exempt from the operator
+/// ceiling (a ceiling list cannot name a tenant's host); the admission rules in
+/// [`crate::infra_grant`] are what bound them. An extension whose ONLY network
+/// declaration is grants gets a deny-all matcher until a grant is earned — not
+/// the operator's list, which is what an empty declaration falls back to.
+pub(crate) fn effective_url_matcher_with_grants(
+    declared_patterns: &[String],
+    override_matcher: crate::url_matcher::UrlMatcher,
+) -> (
+    crate::url_matcher::UrlMatcher,
+    Vec<crate::infra_grant::KindGrant>,
+) {
+    if declared_patterns.is_empty() {
+        return (override_matcher, Vec::new());
+    }
+    let (patterns, grants) = crate::infra_grant::split_infra_grants(declared_patterns);
+    if patterns.is_empty() {
+        return (crate::url_matcher::UrlMatcher::default(), grants);
+    }
+    (effective_url_matcher(&patterns, override_matcher), grants)
+}
+
 /// Return the host portion of a `http://` pattern, or `None` when the
 /// pattern is not plain http. The leading `*.` wildcard label (e.g.
 /// `http://*.example.com/*`) is stripped so the remaining host can be

@@ -127,7 +127,12 @@ impl secrets::Host for HostState {
             return Err(format!("permission denied for secret: {uri}"));
         }
         match self.secrets_backend.get(&uri) {
-            Ok(value) => Ok(value),
+            Ok(value) => {
+                // Only a successful, permitted read of a declared infra kind
+                // can earn a network grant for this dispatch.
+                self.apply_infra_grant(&uri, &value);
+                Ok(value)
+            }
             Err(crate::host_ports::SecretsError::NotFound(k)) => {
                 Err(format!("secret not found: {k}"))
             }
