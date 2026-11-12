@@ -59,7 +59,7 @@ impl ExtensionRuntime {
     /// # Errors
     ///
     /// [`HostingError::NotAProvider`] unless the extension is a
-    /// `DeployExtension` offering `cap://hosting/provider`;
+    /// `DeployExtension` offering `greentic:hosting/provider`;
     /// [`HostingError::Declaration`] when its declaration is invalid;
     /// [`HostingError::Deadline`] / [`HostingError::Trapped`] if the pure
     /// `describe-provider` export does not return.

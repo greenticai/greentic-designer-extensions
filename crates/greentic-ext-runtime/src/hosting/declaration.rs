@@ -22,7 +22,7 @@ use super::error::DeclarationError;
 /// The capability a hosting extension offers in `describe.json`
 /// (`capabilities.offered[].id`). An existing field, so older readers parse the
 /// describe unchanged.
-pub const HOSTING_PROVIDER_CAPABILITY: &str = "cap://hosting/provider";
+pub const HOSTING_PROVIDER_CAPABILITY: &str = "greentic:hosting/provider";
 
 /// Auth profiles the host implements. Closed: adding one is a host release,
 /// because it is protocol code that touches credentials.

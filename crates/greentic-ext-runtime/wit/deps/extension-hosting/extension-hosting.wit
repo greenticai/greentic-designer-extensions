@@ -15,7 +15,7 @@ package greentic:extension-hosting@0.1.0;
 /// way to wait is to return `pending` and be asked again.
 ///
 /// Where it is declared: an extension of the EXISTING kind `DeployExtension`
-/// that offers the capability `cap://hosting/provider` (see
+/// that offers the capability `greentic:hosting/provider` (see
 /// docs/hosting-provider-world.md for why not a new kind).
 
 interface log {
