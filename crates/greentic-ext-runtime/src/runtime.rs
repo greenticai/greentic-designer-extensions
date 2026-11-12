@@ -312,6 +312,25 @@ impl ExtensionRuntime {
             .map_err(RuntimeError::Wasmtime)
     }
 
+    /// A fresh store and instance for one hosting-provider invocation, built
+    /// on the dedicated hosting linker (see `loaded_hosting`). The guest's own
+    /// execution deadline is the smaller of the runtime's dispatch timeout and
+    /// the target's per-invocation limit.
+    pub(crate) fn dispatch_hosting(
+        &self,
+        ext_id: &str,
+        session: crate::hosting::session::HostingSession,
+        invocation_timeout: std::time::Duration,
+    ) -> Result<(wasmtime::Store<HostState>, wasmtime::component::Instance), RuntimeError> {
+        let deadline = self
+            .config
+            .dispatch_timeout
+            .map_or(invocation_timeout, |d| d.min(invocation_timeout));
+        self.lookup(ext_id)?
+            .build_hosting_store_and_instance(&self.engine, session, Some(deadline))
+            .map_err(RuntimeError::Wasmtime)
+    }
+
     /// Look a loaded extension up by id, or fail with
     /// [`RuntimeError::NotFound`].
     pub(crate) fn lookup(&self, ext_id: &str) -> Result<LoadedExtensionRef, RuntimeError> {

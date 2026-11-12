@@ -55,6 +55,10 @@ pub struct HostState {
     /// here because wasmtime resolves the limiter out of the store's data on
     /// every growth request.
     pub(crate) limits: crate::limits::PackLimits,
+    /// Policy engine for a hosting-provider invocation. `None` for every other
+    /// kind of dispatch, in which case the hosting imports (which are not even
+    /// linked there) would answer "not declared".
+    pub(crate) hosting: Option<crate::hosting::session::HostingSession>,
     // WASI state — required because cargo-component-built WASM components
     // implicitly import WASI interfaces (wasi:cli/environment etc.).
     wasi: WasiCtx,
@@ -82,6 +86,7 @@ impl HostState {
             call_depth_start: 0,
             oauth_config: None,
             http_timeout: crate::limits::http_timeout_for(None),
+            hosting: None,
         }
     }
 
@@ -128,6 +133,7 @@ pub struct HostStateBuilder {
     call_depth_start: u32,
     oauth_config: Option<crate::oauth::OAuthBrokerConfig>,
     http_timeout: std::time::Duration,
+    hosting: Option<crate::hosting::session::HostingSession>,
 }
 
 impl HostStateBuilder {
@@ -225,6 +231,13 @@ impl HostStateBuilder {
         self
     }
 
+    /// Attach the hosting policy session for this invocation.
+    #[must_use]
+    pub(crate) fn hosting(mut self, s: Option<crate::hosting::session::HostingSession>) -> Self {
+        self.hosting = s;
+        self
+    }
+
     #[must_use]
     pub fn build(self) -> HostState {
         HostState {
@@ -245,6 +258,7 @@ impl HostStateBuilder {
             runtime_weak: self.runtime_weak,
             oauth_config: self.oauth_config,
             limits: crate::limits::PackLimits::new(),
+            hosting: self.hosting,
             // A default WASI context grants no preopened directory, no
             // environment, and no stdio — cargo-component imports the
             // interfaces unconditionally, but nothing behind them is reachable.
