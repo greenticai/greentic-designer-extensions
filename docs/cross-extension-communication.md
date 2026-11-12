@@ -19,6 +19,35 @@ and the host routes the call, enforcing permissions and depth limits.
 
 ## The Broker API
 
+> **Status — cross-extension dispatch is not implemented yet.** The permission
+> and call-depth checks described on this page are live and enforced. The hop
+> after them — actually invoking the target extension — is not built. A
+> `call-extension` call that passes both checks does not reach its target; it
+> returns:
+>
+> ```
+> Err("broker: dispatch to greentic.adaptive-cards.validate-content is not implemented yet")
+> ```
+>
+> The message is `broker: dispatch to <target-id>.<function> is not implemented
+> yet`. Two variants exist and mean the same thing: extensions built against
+> the `research` or `develop` lanes see `broker: dispatch to
+> <target-id>.<function> pending (B.5 WASM round-trip)`, and a caller that
+> constructed a `HostState` without a runtime (unit tests) sees `broker: no
+> runtime context available`.
+>
+> **What works today** is the security-load-bearing half — the
+> `callExtensionKinds` permission gate and the max-depth guard, both below.
+> **What does not work** is the dispatch that would follow them, so there is
+> currently no way for one extension to obtain a result from another.
+>
+> Everything from [Graceful Degradation](#graceful-degradation) onward —
+> including the worked example — describes the **intended** API once dispatch
+> lands, not behaviour you can exercise today. It is still the right shape to
+> write against: such code compiles and runs, it simply always takes its error
+> branch. That is exactly why handling the error branch, rather than
+> unwrapping, is worth doing now.
+
 The broker is imported from `greentic:extension-host/broker`:
 
 ```wit
@@ -60,7 +89,8 @@ Before using the broker, declare permission in `describe.json`:
 ```
 
 Without this declaration, any `call-extension` call returns
-`Err("permission denied: caller not allowed to call design extensions")`.
+`Err("<your-extension-id> may not call design extensions")` — for example
+`Err("osora.flow-designer may not call design extensions")`.
 
 The allowlist is a list of kinds. An extension that needs to call both
 design and bundle extensions must declare both:
@@ -80,7 +110,7 @@ The host enforces a maximum call depth to prevent runaway recursion. The
 default limit is **8**. A call that would exceed this depth returns:
 
 ```
-Err("call depth limit exceeded (max 8)")
+Err("max broker call depth exceeded (8 >= 8)")
 ```
 
 Extensions must not rely on unbounded recursion. Design for a bounded call
@@ -130,6 +160,12 @@ an opaque error.
 ---
 
 ## Worked Example — Flow Designer Calling AC Validation
+
+> **Illustrates the intended API, not current behaviour.** Steps 1 and 2 are
+> accurate and worth writing today. Steps 3 and 4 describe what the host will
+> do once dispatch lands — today the call stops at step 3 and returns the
+> `is not implemented yet` error quoted under
+> [The Broker API](#the-broker-api). See that notice before building on this.
 
 Extension: `osora.flow-designer` (a design extension for authoring flows)
 Target: `greentic.adaptive-cards` (validates card embedded in a flow node)

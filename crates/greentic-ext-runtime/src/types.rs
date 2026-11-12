@@ -1,3 +1,60 @@
+/// Host-side declaration of a UI view an extension contributes to a host
+/// surface (Designer sidebar, Admin tenant detail panel, etc).
+///
+/// Mirrors `greentic_extension_sdk_contract::describe::contributions::View`
+/// field-for-field — `surface`, `placement`, and `min_visibility` are that
+/// crate's own types reused directly rather than re-mirrored, the same way
+/// [`ToolDefinition::secret_requirements`] reuses `greentic_types` directly;
+/// there is no WIT-bindgen type here to keep out of the public API, so
+/// duplicating them would only be extra upkeep. Two fields have no contract
+/// equivalent because they depend on where this extension actually landed on
+/// disk:
+///
+/// - `asset_dir`: `<source_dir>/assets/views/<id>/`, the directory the whole
+///   view bundle (entry HTML plus its JS/CSS/images) lives under. A host
+///   serving the view as a static page needs this to serve every relative
+///   resource the entry references, not just the entry file itself.
+/// - `entry_path`: `asset_dir` joined with `entry`, resolved and checked for
+///   path traversal here (the same discipline
+///   [`crate::runtime_verify::pack_relative_path`] applies to
+///   `gtpack.file`) rather than left for every host to re-derive — and,
+///   more importantly, to re-remember the `..`-rejection. `entry` is a
+///   publisher-controlled string from a signed `describe.json`; resolving it
+///   once in the loader means every host gets the same guard.
+///
+/// Both fields are kept because they answer different questions: `entry_path`
+/// is what a host opens first, `asset_dir` is the root it serves everything
+/// else from.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ViewDefinition {
+    /// Unique within the extension. The host namespaces it as
+    /// `<extension_id>/<id>`.
+    pub id: String,
+    pub surface: greentic_extension_sdk_contract::describe::contributions::Surface,
+    /// Key resolved against the top-level `localization` block.
+    pub title_key: String,
+    /// Literal shown when `title_key` has no entry for the active locale.
+    pub title_fallback: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// Entry HTML, relative to `asset_dir` inside the pack. See
+    /// [`Self::entry_path`] for the resolved, path-safety-checked form.
+    pub entry: String,
+    pub placement: greentic_extension_sdk_contract::describe::contributions::Placement,
+    #[serde(default)]
+    pub min_visibility: greentic_extension_sdk_contract::describe::contributions::Visibility,
+    /// Names of this extension's own contributed tools the view may invoke
+    /// through the host bridge.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
+    /// `<source_dir>/assets/views/<id>/` — the directory this view's whole
+    /// asset bundle lives under.
+    pub asset_dir: std::path::PathBuf,
+    /// `asset_dir` joined with `entry`, resolved and checked against path
+    /// traversal.
+    pub entry_path: std::path::PathBuf,
+}
+
 /// Host-side mirror of WIT `greentic:extension-design/tools@0.2.0::tool-definition`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolDefinition {

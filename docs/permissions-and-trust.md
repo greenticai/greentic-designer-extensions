@@ -110,6 +110,44 @@ field) means the extension cannot call any other extension.
 
 ---
 
+## Views May Only Invoke Their Own Extension's Tools
+
+A view contributed under `contributions.views[]` invokes tools **by name**
+through the designer's view bridge. Because that dispatch is by name, the
+designer enforces an own-tools-only rule: a view may invoke a tool only when
+both of these hold.
+
+1. The tool appears in the **same extension's** `contributions.tools`. This
+   is the security boundary — without it, a view could name any loaded
+   extension's tool and by-name dispatch would run it.
+2. The view named that tool in its own `contributions.views[].tools`. This is
+   the author's own narrowing of the boundary above, not a security property.
+
+A refusal is an HTTP `403` carrying a stable code, so a caller can tell an
+authoring mistake from an escalation attempt without parsing prose:
+
+| Code | Meaning |
+|------|---------|
+| `E_TOOL_NOT_CONTRIBUTED` | This extension contributes no tool by that name. |
+| `E_TOOL_NOT_DECLARED_BY_VIEW` | The extension contributes it, but this view did not list it. Fix `describe.json`. |
+| `E_TOOL_OWNED_BY_OTHER_EXTENSION` | The name resolves to a **different** loaded extension. |
+| `E_TOOL_RESERVED_NAME` | The name collides with a designer-native tool. |
+| `E_TOOL_NOT_ADVERTISED_BY_RUNTIME` | `describe.json` promises the tool but the loaded pack does not advertise it — a broken pack, not a caller error. |
+| `E_TOOL_REQUIRES_TENANT_SCOPE` | The call has no tenant to resolve secrets and per-tenant config against. |
+
+`E_TOOL_OWNED_BY_OTHER_EXTENSION` fires only when two loaded extensions
+advertise the **same tool name**. Running the other extension's copy is
+precisely the privilege escalation this rule exists to prevent, so the call is
+refused rather than resolved to either one. This is deliberate and permanent —
+unlike the broker gap in
+[Cross-Extension Communication](cross-extension-communication.md), it is not
+awaiting an implementation. An extension that genuinely needs another
+extension's capability must go through the broker once dispatch lands, where
+the call is gated by `callExtensionKinds` above and the target runs under its
+own identity and permissions.
+
+---
+
 ## Default-Deny Semantics
 
 Every permission field defaults to empty — **denied unless explicitly

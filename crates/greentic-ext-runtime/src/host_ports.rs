@@ -117,6 +117,29 @@ pub struct LlmPortResponse {
     pub total_tokens: Option<u32>,
 }
 
+/// A batch embedding request forwarded to the host. Credential-free AND
+/// model-free by design: the host resolves provider, model and key from the
+/// resolved `role`, which is the whole point of the capability — a guest that
+/// could name the model could also name a model the tenant does not pay for.
+#[derive(Debug, Clone)]
+pub struct EmbedPortRequest {
+    /// Texts to embed. The caller (`host_state_llm`) has already enforced the
+    /// count and size caps, so an implementation may assume a sane batch.
+    pub inputs: Vec<String>,
+}
+
+/// Successful batch embedding result.
+#[derive(Debug, Clone)]
+pub struct EmbedPortResponse {
+    /// One vector per input, in the SAME order as `EmbedPortRequest::inputs`.
+    /// Callers correlate vectors back to their own chunks positionally, so an
+    /// implementation that reorders or drops one returns silently wrong data.
+    pub vectors: Vec<Vec<f32>>,
+    /// The model the host resolved and used. Guests key their vector store on
+    /// this: vectors from two models are not comparable.
+    pub model: String,
+}
+
 /// Errors the runtime surfaces when an LLM completion fails. Mirrors
 /// [`SecretsError`]'s plain-enum + `thiserror` style so `host_state` can
 /// stringify the failure for the WIT `result<_, string>` boundary.
@@ -129,6 +152,10 @@ pub enum LlmPortError {
     /// The host LLM backend failed (network, provider, quota, etc.).
     #[error("backend error: {0}")]
     Backend(String),
+    /// This host wires completions but no embedder. Distinct from `Backend`:
+    /// nothing failed, the capability is absent.
+    #[error("embeddings not supported by this host")]
+    Unsupported,
 }
 
 /// Host port for LLM completions, implemented by the embedding host
@@ -151,6 +178,21 @@ pub trait LlmPort: Send + Sync {
         role: &str,
         request: LlmPortRequest,
     ) -> Result<LlmPortResponse, LlmPortError>;
+
+    /// Embed a batch of texts, resolving the role exactly as `complete` does.
+    ///
+    /// The default body returns [`LlmPortError::Unsupported`] so a host that
+    /// has not wired an embedder keeps compiling and reports the honest reason.
+    /// This is what lets the WIT change land one repo at a time.
+    fn embed(
+        &self,
+        _extension_id: &str,
+        _ctx: &HostCallContext,
+        _role: &str,
+        _request: EmbedPortRequest,
+    ) -> Result<EmbedPortResponse, LlmPortError> {
+        Err(LlmPortError::Unsupported)
+    }
 }
 
 /// Per-invocation caller context threaded from the embedding host into
@@ -196,5 +238,49 @@ mod tests {
         let s = InMemorySecrets::default();
         let err = s.get("api.openai.com/api_key").unwrap_err();
         assert!(matches!(err, SecretsError::NotFound(_)));
+    }
+}
+
+#[cfg(test)]
+mod embed_default_tests {
+    use super::*;
+
+    /// A host that wires completions but no embedder must report the honest
+    /// reason rather than failing to compile or panicking.
+    struct CompleteOnlyPort;
+
+    impl LlmPort for CompleteOnlyPort {
+        fn complete(
+            &self,
+            _extension_id: &str,
+            _ctx: &HostCallContext,
+            _role: &str,
+            _request: LlmPortRequest,
+        ) -> Result<LlmPortResponse, LlmPortError> {
+            Ok(LlmPortResponse {
+                content: "hi".to_string(),
+                total_tokens: None,
+            })
+        }
+    }
+
+    #[test]
+    fn a_port_that_implements_only_complete_reports_embeddings_unsupported() {
+        let port = CompleteOnlyPort;
+        let err = port
+            .embed(
+                "ext.demo",
+                &HostCallContext::default(),
+                "agentic_worker_composer",
+                EmbedPortRequest {
+                    inputs: vec!["one".to_string()],
+                },
+            )
+            .expect_err("a complete-only port must not claim to embed");
+        assert!(
+            matches!(err, LlmPortError::Unsupported),
+            "expected Unsupported, got {err:?}"
+        );
+        assert_eq!(err.to_string(), "embeddings not supported by this host");
     }
 }

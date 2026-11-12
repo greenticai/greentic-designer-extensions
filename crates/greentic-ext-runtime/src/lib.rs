@@ -35,6 +35,7 @@ mod runtime_registry;
 mod runtime_roles;
 mod runtime_targets;
 mod runtime_verify;
+mod runtime_views;
 mod runtime_watch;
 mod tool_metadata_report;
 pub mod types;
@@ -57,11 +58,12 @@ pub use self::runtime::{ExtensionRuntime, RuntimeEvent, WatcherGuard};
 pub use self::runtime_config::RuntimeConfig;
 pub use self::runtime_design::contribution_tool_to_definition;
 pub use self::runtime_hosting::{HostingContext, HostingProvider};
+pub use self::runtime_views::view_to_definition;
 pub use self::types::{
     BundleArtifact, BundleSession, CompileContext, DeployExtensionError, DeployJob, DeployRequest,
     DeployStatus, Diagnostic, HostExtensionError, KnowledgeEntry, KnowledgeEntrySummary,
     PromptFragment, RoleError, RoleSpec, Severity, TargetKind, TargetSummary, ToolDefinition,
-    ValidateResult,
+    ValidateResult, ViewDefinition,
 };
 pub use self::url_matcher::UrlMatcher;
 
