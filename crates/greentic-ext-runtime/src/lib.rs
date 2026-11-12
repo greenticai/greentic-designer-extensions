@@ -11,13 +11,16 @@ mod health;
 pub mod host_bindings;
 pub mod host_ports;
 mod host_state;
+mod host_state_hosting;
 mod host_state_llm;
 mod host_state_net;
 mod host_state_oauth;
 mod host_state_ports;
+pub mod hosting;
 mod http_scheme_policy;
 mod limits;
 mod loaded;
+mod loaded_hosting;
 mod net_permissions;
 pub mod oauth;
 mod runtime;
@@ -26,6 +29,7 @@ mod runtime_config;
 mod runtime_deploy;
 mod runtime_design;
 mod runtime_dw_composer;
+mod runtime_hosting;
 mod runtime_knowledge;
 mod runtime_registry;
 mod runtime_roles;
@@ -53,6 +57,7 @@ pub use self::loaded::{ExtensionId, HostOverrides, LoadedExtension, LoadedExtens
 pub use self::runtime::{ExtensionRuntime, RuntimeEvent, WatcherGuard};
 pub use self::runtime_config::RuntimeConfig;
 pub use self::runtime_design::contribution_tool_to_definition;
+pub use self::runtime_hosting::{HostingContext, HostingProvider};
 pub use self::runtime_views::view_to_definition;
 pub use self::types::{
     BundleArtifact, BundleSession, CompileContext, DeployExtensionError, DeployJob, DeployRequest,

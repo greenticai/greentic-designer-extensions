@@ -60,6 +60,9 @@ workspace = true
 [dependencies.sha2]
 workspace = true
 
+[dependencies.serde_jcs]
+workspace = true
+
 [dependencies.thiserror]
 workspace = true
 
@@ -73,6 +76,9 @@ workspace = true
 workspace = true
 
 [dependencies.wasmtime-wasi]
+workspace = true
+
+[dependencies.wasmtime-wasi-io]
 workspace = true
 
 [dependencies.reqwest]

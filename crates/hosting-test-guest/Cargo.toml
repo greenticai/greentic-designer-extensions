@@ -1,0 +1,25 @@
+[package]
+name = "hosting-test-guest"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Test-only hosting extension component: one lifecycle implementation, many behaviours picked by the `scenario` target setting"
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+# Builds the variant that reads the clock. The hosting linker refuses it.
+sleeper = []
+
+[dependencies]
+wit-bindgen = { version = "0.41", default-features = false, features = ["macros", "realloc"] }
+
+# Not a member of the runtime workspace: it targets wasm32-wasip2 and is built
+# on demand by the runtime's integration tests (see tests/support/hosting_guest.rs).
+[workspace]
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

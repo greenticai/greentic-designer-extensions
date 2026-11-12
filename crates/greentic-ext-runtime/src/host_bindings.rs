@@ -121,3 +121,18 @@ pub mod dw_composer_v02 {
         world: "greentic:dw-composer/dw-composer-extension@0.2.0",
     });
 }
+
+// ---------------------------------------------------------------------------
+// Hosting-provider bindings (`greentic:extension-hosting`).
+//
+// Isolated submodule like the other worlds. Its three imports (`log`,
+// `target`, `api`) are deliberately NOT registered by `add_host_interfaces`:
+// only the dedicated hosting linker in `loaded_hosting.rs` provides them, so
+// no other kind of extension can reach `api.call`.
+// ---------------------------------------------------------------------------
+pub mod hosting {
+    wasmtime::component::bindgen!({
+        path: "wit",
+        world: "greentic:extension-hosting/hosting-extension@0.1.0",
+    });
+}

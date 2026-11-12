@@ -4,6 +4,8 @@
 //! The `EnvGuard::set` guard serializes via a global Mutex.
 #![allow(dead_code)]
 
+pub mod hosting;
+
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 fn env_mutex() -> &'static Mutex<()> {

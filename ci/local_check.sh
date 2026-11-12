@@ -23,5 +23,6 @@ echo "==> wit sync check (canonical vs vendored)"
 diff wit/extension-host.wit crates/greentic-ext-runtime/wit/deps/extension-host/extension-host.wit
 diff wit/extension-design.wit crates/greentic-ext-runtime/wit/deps/extension-design-0.4/extension-design.wit
 diff wit/runtime-side.wit crates/greentic-ext-runtime/wit/runtime-side.wit
+diff wit/extension-hosting.wit crates/greentic-ext-runtime/wit/deps/extension-hosting/extension-hosting.wit
 
 echo "All checks passed."
