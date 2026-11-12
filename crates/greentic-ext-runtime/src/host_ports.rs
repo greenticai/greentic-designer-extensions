@@ -9,6 +9,11 @@ use std::sync::Mutex;
 
 use thiserror::Error;
 
+pub use crate::host_ports_knowledge::{
+    KnowledgeCreateRequest, KnowledgeCreated, KnowledgeDocument, KnowledgeDocumentInfo,
+    KnowledgePort, KnowledgePortError,
+};
+
 /// Look up i18n keys against a locale catalog set up by the host.
 ///
 /// `t` returns the rendered string for `key` (or the key itself if no
@@ -261,6 +266,13 @@ pub struct HostCallContext {
     /// Hosts that validate per-user identity (e.g. the designer-admin) require
     /// it.
     pub user_email: Option<String>,
+    /// Slug of the team the call runs in, when the host scopes below the
+    /// tenant (the designer's knowledge port does). `None` when unscoped.
+    pub team: Option<String>,
+    /// Id of the host session the call belongs to (e.g. the designer's worker
+    /// session), so a port can resolve what that session is bound to. `None`
+    /// when the call has no session.
+    pub session_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -337,6 +349,26 @@ mod embed_default_tests {
             "expected Unsupported, got {err:?}"
         );
         assert_eq!(err.to_string(), "embeddings not supported by this host");
+    }
+}
+
+#[cfg(test)]
+mod call_context_tests {
+    use super::*;
+
+    /// Old callers build the context with `Default` and two fields; the new
+    /// scope fields must default to `None` so they keep compiling unchanged.
+    #[test]
+    fn a_default_context_carries_no_team_or_session() {
+        let ctx = HostCallContext {
+            tenant: Some("acme".into()),
+            user_email: Some("u@example.com".into()),
+            ..HostCallContext::default()
+        };
+        assert_eq!(ctx.team, None);
+        assert_eq!(ctx.session_id, None);
+        let empty = HostCallContext::default();
+        assert!(empty.tenant.is_none() && empty.team.is_none() && empty.session_id.is_none());
     }
 }
 

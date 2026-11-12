@@ -31,12 +31,14 @@ fn is_format_or_bidi(c: char) -> bool {
     )
 }
 
-fn check_name(name: &str) -> Result<(), ArtifactError> {
+/// Why `name` is not an acceptable display/file name, or `None` when it is.
+/// Shared with the knowledge interface so the two name rules cannot drift.
+pub(crate) fn name_problem(name: &str) -> Option<&'static str> {
     if name.trim().is_empty() {
-        return Err(invalid("name", "is blank"));
+        return Some("is blank");
     }
     if name.len() > MAX_ARTIFACT_NAME_BYTES {
-        return Err(invalid("name", "is too long"));
+        return Some("is too long");
     }
     // The name is shown to users and used as a file name downstream: no path
     // separators, no control characters (NUL and newlines included) and no
@@ -46,16 +48,20 @@ fn check_name(name: &str) -> Result<(), ArtifactError> {
         .chars()
         .any(|c| c == '/' || c == '\\' || c.is_control() || is_format_or_bidi(c))
     {
-        return Err(invalid(
-            "name",
-            "contains a path separator, control or invisible format character",
-        ));
+        return Some("contains a path separator, control or invisible format character");
     }
     // Relative path components are never a file name.
     if name == "." || name == ".." {
-        return Err(invalid("name", "is a relative path component"));
+        return Some("is a relative path component");
     }
-    Ok(())
+    None
+}
+
+fn check_name(name: &str) -> Result<(), ArtifactError> {
+    match name_problem(name) {
+        Some(why) => Err(invalid("name", why)),
+        None => Ok(()),
+    }
 }
 
 fn check_mime(mime: &str) -> Result<(), ArtifactError> {
@@ -176,6 +182,7 @@ mod tests {
             HostCallContext {
                 tenant: tenant.map(str::to_string),
                 user_email: Some("u@example.com".into()),
+                ..HostCallContext::default()
             },
         );
         if let Some(p) = port {
@@ -338,6 +345,7 @@ mod tests {
                 .call_ctx(HostCallContext {
                     tenant: Some("acme".into()),
                     user_email: None,
+                    ..HostCallContext::default()
                 })
                 .artifact_port(Some(Arc::new(BadId(bad)) as Arc<dyn ArtifactPort>))
                 .build();

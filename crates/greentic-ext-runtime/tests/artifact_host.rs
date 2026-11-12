@@ -56,6 +56,7 @@ fn call_touch(port: Option<Arc<dyn ArtifactPort>>) -> u32 {
         .call_ctx(HostCallContext {
             tenant: Some("acme".into()),
             user_email: None,
+            ..HostCallContext::default()
         })
         .artifact_port(port)
         .build();

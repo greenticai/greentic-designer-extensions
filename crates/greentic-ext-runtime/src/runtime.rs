@@ -52,6 +52,8 @@ pub struct ExtensionRuntime {
     events: broadcast::Sender<RuntimeEvent>,
     /// Backs `host.artifact.put`; `None` means `put` answers `unsupported`.
     artifact_port: Option<std::sync::Arc<dyn crate::host_ports::ArtifactPort>>,
+    /// Backs `host.knowledge.*`; `None` means every call answers `unavailable`.
+    knowledge_port: Option<std::sync::Arc<dyn crate::host_ports::KnowledgePort>>,
     infra_grants: std::sync::Arc<crate::infra_grant::InfraGrantSettings>,
 }
 
@@ -139,6 +141,7 @@ impl ExtensionRuntime {
             write_lock: std::sync::Mutex::new(()),
             events: tx,
             artifact_port: None,
+            knowledge_port: None,
             infra_grants: std::sync::Arc::default(),
         })
     }
@@ -211,6 +214,19 @@ impl ExtensionRuntime {
         port: std::sync::Arc<dyn crate::host_ports::ArtifactPort>,
     ) -> Self {
         self.artifact_port = Some(port);
+        self
+    }
+
+    /// Install the port backing `host.knowledge.*` for every dispatch.
+    ///
+    /// Separate builder for the same reason as [`Self::with_artifact_port`].
+    /// Without this call, every knowledge operation answers `unavailable`.
+    #[must_use]
+    pub fn with_knowledge_port(
+        mut self,
+        port: std::sync::Arc<dyn crate::host_ports::KnowledgePort>,
+    ) -> Self {
+        self.knowledge_port = Some(port);
         self
     }
 
@@ -306,7 +322,10 @@ impl ExtensionRuntime {
                 self.config.host_overrides.clone(),
                 ctx,
                 self.config.dispatch_timeout,
-                self.artifact_port.clone(),
+                crate::loaded::DispatchPorts {
+                    artifact: self.artifact_port.clone(),
+                    knowledge: self.knowledge_port.clone(),
+                },
                 self.infra_grants.clone(),
             )
             .map_err(RuntimeError::Wasmtime)

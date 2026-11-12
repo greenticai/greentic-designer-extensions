@@ -47,7 +47,7 @@ fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 
 /// Mirrors `tests/support`: that module uses `unsafe` for env guards, which this
 /// crate's `forbid(unsafe_code)` refuses inside a unit test.
-fn sign_fixture_dir(
+pub(crate) fn sign_fixture_dir(
     dir: &std::path::Path,
     describe: &mut greentic_extension_sdk_contract::DescribeJson,
     sk: &ed25519_dalek::SigningKey,
@@ -141,6 +141,7 @@ fn touch(rt: &ExtensionRuntime) -> u32 {
     let ctx = HostCallContext {
         tenant: Some("acme".into()),
         user_email: None,
+        ..HostCallContext::default()
     };
     let (mut store, instance) = rt
         .dispatch_instance_ctx(EXT_ID, &ctx)

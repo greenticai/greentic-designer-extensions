@@ -10,8 +10,10 @@ pub mod guardrail_map;
 mod health;
 pub mod host_bindings;
 pub mod host_ports;
+mod host_ports_knowledge;
 mod host_state;
 mod host_state_artifact;
+mod host_state_knowledge;
 mod host_state_llm;
 mod host_state_net;
 mod host_state_oauth;
@@ -23,6 +25,7 @@ mod infra_grant_policy;
 mod infra_grant_policy_tests;
 #[cfg(test)]
 mod infra_grant_tests;
+mod knowledge_grant;
 mod limits;
 mod loaded;
 mod net_permissions;
@@ -36,6 +39,8 @@ mod runtime_deploy;
 mod runtime_design;
 mod runtime_dw_composer;
 mod runtime_knowledge;
+#[cfg(test)]
+mod runtime_knowledge_port_tests;
 mod runtime_registry;
 mod runtime_roles;
 mod runtime_sorx;
