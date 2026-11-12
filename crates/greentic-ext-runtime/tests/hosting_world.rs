@@ -11,13 +11,13 @@ mod support;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use greentic_ext_runtime::HostingProvider;
 use greentic_ext_runtime::hosting::audit::{MemoryAuditSink, Outcome};
 use greentic_ext_runtime::hosting::mock::MockHostingPort;
 use greentic_ext_runtime::hosting::{
     DestroyMode, HostError, HostOutcome, HostSpec, HostingError, HostingLimits, PortResponse,
     Refusal, TargetPolicy,
 };
-use greentic_ext_runtime::HostingProvider;
 use greentic_extension_sdk_contract::ExtensionKind;
 
 use support::hosting::{self as h, fake_credential};
@@ -56,13 +56,23 @@ fn approved<'a>(
 
 /// Run a probing scenario and return what the guest reported (the forged
 /// trailing ref is filtered by the host, so it never appears).
-fn scenario(name: &str, port: MockHostingPort, policy: TargetPolicy) -> (Vec<String>, Arc<MockHostingPort>, Arc<MemoryAuditSink>) {
+fn scenario(
+    name: &str,
+    port: MockHostingPort,
+    policy: TargetPolicy,
+) -> (Vec<String>, Arc<MockHostingPort>, Arc<MemoryAuditSink>) {
     let hn = honest();
     let port = Arc::new(port.setting("scenario", name));
     let audit = Arc::new(MemoryAuditSink::new());
     let p = approved(&hn, &port, policy, &audit);
     let out = p.list_owned().expect("list-owned");
-    (out.into_iter().map(|s| s.trim_start_matches("ecs:").to_string()).collect(), port, audit)
+    (
+        out.into_iter()
+            .map(|s| s.trim_start_matches("ecs:").to_string())
+            .collect(),
+        port,
+        audit,
+    )
 }
 
 #[test]
@@ -83,9 +93,15 @@ fn the_honest_provider_runs_the_whole_lifecycle_against_the_mock() {
 
     assert_eq!(p.ensure_host(&spec(), "h1").unwrap(), HostOutcome::Pending);
     let seen = port.seen();
-    let create = seen.iter().find(|c| c.headers.iter().any(|(_, v)| v.ends_with("CreateSecret"))).unwrap();
+    let create = seen
+        .iter()
+        .find(|c| c.headers.iter().any(|(_, v)| v.ends_with("CreateSecret")))
+        .unwrap();
     let sent = String::from_utf8(create.body.clone().unwrap()).unwrap();
-    assert!(sent.contains(&fake_credential()), "the API receives the real value");
+    assert!(
+        sent.contains(&fake_credential()),
+        "the API receives the real value"
+    );
     assert!(sent.contains("fp-abc"));
     assert_eq!(create.host, "secretsmanager.eu-west-1.amazonaws.com");
 
@@ -96,11 +112,20 @@ fn the_honest_provider_runs_the_whole_lifecycle_against_the_mock() {
         }
         HostOutcome::Pending => panic!("expected ready"),
     }
-    p.destroy("ecs:c/gtc-infra-h1", DestroyMode::Retain).unwrap();
+    p.destroy("ecs:c/gtc-infra-h1", DestroyMode::Retain)
+        .unwrap();
 
     let events = audit.events();
-    assert!(events.iter().any(|e| e.operation == "ensure-host" && e.endpoint == "aws.secretsmanager"));
-    assert!(events.iter().all(|e| e.target_id == "t1" && e.extension_version == "0.1.0"));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.operation == "ensure-host" && e.endpoint == "aws.secretsmanager")
+    );
+    assert!(
+        events
+            .iter()
+            .all(|e| e.target_id == "t1" && e.extension_version == "0.1.0")
+    );
     assert!(!format!("{events:?}").contains(&fake_credential()));
 }
 
@@ -110,7 +135,9 @@ fn creating_hosts_needs_an_approval_of_exactly_this_declaration() {
     let audit = Arc::new(MemoryAuditSink::new());
     let port = Arc::new(h::port());
     let with = |policy: TargetPolicy| {
-        hn.rt.hosting_provider(ID, h::ctx(port.clone(), policy, audit.clone())).unwrap()
+        hn.rt
+            .hosting_provider(ID, h::ctx(port.clone(), policy, audit.clone()))
+            .unwrap()
     };
     let refused = |p: &HostingProvider<'_>, why: Refusal| match p.ensure_host(&spec(), "h1") {
         Err(HostingError::Refused(r)) => assert_eq!(r, why),
@@ -121,7 +148,10 @@ fn creating_hosts_needs_an_approval_of_exactly_this_declaration() {
     refused(&unapproved, Refusal::NotApproved);
     let hash = unapproved.capability_hash().to_string();
 
-    refused(&with(h::policy().approved("sha256:other")), Refusal::NeedsReapproval);
+    refused(
+        &with(h::policy().approved("sha256:other")),
+        Refusal::NeedsReapproval,
+    );
     let mut frozen = h::policy().approved(hash.clone());
     frozen.frozen = true;
     refused(&with(frozen.clone()), Refusal::Frozen);
@@ -131,11 +161,20 @@ fn creating_hosts_needs_an_approval_of_exactly_this_declaration() {
 
     // Existing hosts stay readable and deletable under every one of those.
     for p in [with(h::policy()), with(frozen), with(disabled)] {
-        assert!(matches!(p.describe_host("ecs:c/gtc-infra-h1"), Ok(HostOutcome::Ready(_))));
-        p.destroy("ecs:c/gtc-infra-h1", DestroyMode::Retain).unwrap();
+        assert!(matches!(
+            p.describe_host("ecs:c/gtc-infra-h1"),
+            Ok(HostOutcome::Ready(_))
+        ));
+        p.destroy("ecs:c/gtc-infra-h1", DestroyMode::Retain)
+            .unwrap();
         assert!(p.list_owned().is_ok());
     }
-    assert_eq!(with(h::policy().approved(hash)).ensure_host(&spec(), "h1").unwrap(), HostOutcome::Pending);
+    assert_eq!(
+        with(h::policy().approved(hash))
+            .ensure_host(&spec(), "h1")
+            .unwrap(),
+        HostOutcome::Pending
+    );
 }
 
 #[test]
@@ -148,8 +187,14 @@ fn a_handle_for_a_foreign_host_never_leaves_the_runtime() {
         p.describe_host("ecs:c/gtc-infra-h-forged"),
         Err(HostingError::Refused(Refusal::HandleRejected))
     ));
-    assert!(matches!(p.describe_host("arn:aws:iam::1:root"), Err(HostingError::Provider(HostError::Rejected))));
-    assert!(matches!(p.host_ref_for("bad id!"), Err(HostingError::Provider(HostError::Rejected))));
+    assert!(matches!(
+        p.describe_host("arn:aws:iam::1:root"),
+        Err(HostingError::Provider(HostError::Rejected))
+    ));
+    assert!(matches!(
+        p.host_ref_for("bad id!"),
+        Err(HostingError::Provider(HostError::Rejected))
+    ));
 }
 
 #[test]
@@ -176,7 +221,10 @@ fn malicious_undeclared_action_header_path_and_size() {
     ] {
         let (out, port, _a) = scenario(name, h::port(), h::policy());
         assert_eq!(out, vec![expect], "{name}");
-        assert!(port.seen().is_empty(), "{name}: the port must never see a refused call");
+        assert!(
+            port.seen().is_empty(),
+            "{name}: the port must never see a refused call"
+        );
     }
 }
 
@@ -200,17 +248,33 @@ fn malicious_undeclared_host_is_refused_even_for_a_declared_endpoint() {
 #[test]
 fn malicious_call_flood_is_cut_at_the_budget() {
     let (out, port, _a) = scenario("flood", h::port(), h::policy());
-    assert_eq!(out, vec!["first-denied-at:151"], "150 calls allowed, the 151st refused");
+    assert_eq!(
+        out,
+        vec!["first-denied-at:151"],
+        "150 calls allowed, the 151st refused"
+    );
     assert_eq!(port.seen().len(), 150);
-    let tight = h::policy().with_limits(HostingLimits { max_calls: 5, ..HostingLimits::default() });
+    let tight = h::policy().with_limits(HostingLimits {
+        max_calls: 5,
+        ..HostingLimits::default()
+    });
     let (out, ..) = scenario("flood", h::port(), tight);
     assert_eq!(out, vec!["first-denied-at:6"]);
 }
 
 #[test]
 fn malicious_oversized_response_is_dropped() {
-    let big = h::port().respond(|_| Ok(PortResponse { status: 200, headers: vec![], body: vec![b'x'; 4096] }));
-    let small = h::policy().with_limits(HostingLimits { max_response_bytes: 1024, ..HostingLimits::default() });
+    let big = h::port().respond(|_| {
+        Ok(PortResponse {
+            status: 200,
+            headers: vec![],
+            body: vec![b'x'; 4096],
+        })
+    });
+    let small = h::policy().with_limits(HostingLimits {
+        max_response_bytes: 1024,
+        ..HostingLimits::default()
+    });
     let (out, ..) = scenario("ok", big, small);
     assert_eq!(out, vec!["too-large"]);
 }
@@ -218,7 +282,10 @@ fn malicious_oversized_response_is_dropped() {
 #[test]
 fn a_hanging_port_is_cut_at_the_per_call_timeout() {
     let slow = h::port().delay(Duration::from_millis(400));
-    let short = h::policy().with_limits(HostingLimits { call_timeout: Duration::from_millis(100), ..HostingLimits::default() });
+    let short = h::policy().with_limits(HostingLimits {
+        call_timeout: Duration::from_millis(100),
+        ..HostingLimits::default()
+    });
     let (out, ..) = scenario("ok", slow, short);
     assert_eq!(out, vec!["timeout"]);
 }
@@ -248,19 +315,37 @@ fn malicious_attempts_to_read_a_secret_find_nothing() {
 #[test]
 fn echoing_the_credential_back_through_the_api_yields_a_redaction() {
     let echo = h::port().respond(|c| {
-        Ok(PortResponse { status: 200, headers: vec![], body: c.body.clone().unwrap_or_default() })
+        Ok(PortResponse {
+            status: 200,
+            headers: vec![],
+            body: c.body.clone().unwrap_or_default(),
+        })
     });
     let (out, port, audit) = scenario("echo-credential", echo, h::policy());
     let cred = fake_credential();
-    assert!(port.seen()[0].body.as_ref().is_some_and(|b| String::from_utf8_lossy(b).contains(&cred)));
-    assert!(!out.concat().contains(&cred), "the guest must not learn the value: {out:?}");
+    assert!(
+        port.seen()[0]
+            .body
+            .as_ref()
+            .is_some_and(|b| String::from_utf8_lossy(b).contains(&cred))
+    );
+    assert!(
+        !out.concat().contains(&cred),
+        "the guest must not learn the value: {out:?}"
+    );
     assert!(out.concat().contains("[redacted]"));
     assert!(!format!("{:?}", audit.events()).contains(&cred));
 }
 
 #[test]
 fn an_infinite_loop_is_interrupted_by_the_epoch_deadline() {
-    let hn = h::harness(ExtensionKind::Deploy, ID, h::guest_wasm(false), true, Some(Duration::from_secs(2)));
+    let hn = h::harness(
+        ExtensionKind::Deploy,
+        ID,
+        h::guest_wasm(false),
+        true,
+        Some(Duration::from_secs(2)),
+    );
     let port = Arc::new(h::scenario_port("loop"));
     let audit = Arc::new(MemoryAuditSink::new());
     let p = approved(&hn, &port, h::policy(), &audit);
@@ -269,8 +354,15 @@ fn an_infinite_loop_is_interrupted_by_the_epoch_deadline() {
         Err(HostingError::Deadline) => {}
         other => panic!("expected Deadline, got {other:?}"),
     }
-    assert!(t.elapsed() < Duration::from_secs(10), "took {:?}", t.elapsed());
-    assert_eq!(HostingError::Deadline.to_host_error(), HostError::Unreachable);
+    assert!(
+        t.elapsed() < Duration::from_secs(10),
+        "took {:?}",
+        t.elapsed()
+    );
+    assert_eq!(
+        HostingError::Deadline.to_host_error(),
+        HostError::Unreachable
+    );
     // The runtime is not wedged: the next call on a fresh store works.
     let ok = Arc::new(h::scenario_port("ok"));
     let p = approved(&hn, &ok, h::policy(), &audit);
@@ -282,7 +374,10 @@ fn the_per_invocation_limit_also_bounds_the_guest() {
     let hn = h::harness(ExtensionKind::Deploy, ID, h::guest_wasm(false), true, None);
     let port = Arc::new(h::scenario_port("loop"));
     let audit = Arc::new(MemoryAuditSink::new());
-    let short = h::policy().with_limits(HostingLimits { invocation_timeout: Duration::from_secs(2), ..HostingLimits::default() });
+    let short = h::policy().with_limits(HostingLimits {
+        invocation_timeout: Duration::from_secs(2),
+        ..HostingLimits::default()
+    });
     let p = approved(&hn, &port, short, &audit);
     assert!(matches!(p.list_owned(), Err(HostingError::Deadline)));
 }
@@ -321,7 +416,10 @@ fn components_importing_secrets_http_or_a_clock_do_not_instantiate() {
         let port = Arc::new(h::port());
         let audit = Arc::new(MemoryAuditSink::new());
         assert!(
-            matches!(hn.rt.hosting_provider(ID, h::ctx(port, h::policy(), audit)), Err(HostingError::Trapped(_))),
+            matches!(
+                hn.rt.hosting_provider(ID, h::ctx(port, h::policy(), audit)),
+                Err(HostingError::Trapped(_))
+            ),
             "{import} must not link into a hosting extension"
         );
     }
@@ -333,19 +431,32 @@ fn only_a_deploy_extension_offering_the_capability_is_a_provider() {
     let audit = Arc::new(MemoryAuditSink::new());
     let no_cap = h::harness(ExtensionKind::Deploy, ID, h::guest_wasm(false), false, None);
     assert!(matches!(
-        no_cap.rt.hosting_provider(ID, h::ctx(port.clone(), h::policy(), audit.clone())),
+        no_cap
+            .rt
+            .hosting_provider(ID, h::ctx(port.clone(), h::policy(), audit.clone())),
         Err(HostingError::NotAProvider(_))
     ));
     let wrong_kind = h::harness(ExtensionKind::Design, ID, h::guest_wasm(false), true, None);
     assert!(matches!(
-        wrong_kind.rt.hosting_provider(ID, h::ctx(port, h::policy(), audit)),
+        wrong_kind
+            .rt
+            .hosting_provider(ID, h::ctx(port, h::policy(), audit)),
         Err(HostingError::NotAProvider(_))
     ));
 }
 
 #[test]
 fn no_other_extension_can_import_the_hosting_api() {
-    let hn = h::harness(ExtensionKind::Design, ID, wat_importing("greentic:extension-hosting/api@0.1.0"), false, None);
-    let err = hn.rt.invoke_tool(ID, "anything", "{}").expect_err("must not link");
+    let hn = h::harness(
+        ExtensionKind::Design,
+        ID,
+        wat_importing("greentic:extension-hosting/api@0.1.0"),
+        false,
+        None,
+    );
+    let err = hn
+        .rt
+        .invoke_tool(ID, "anything", "{}")
+        .expect_err("must not link");
     assert!(err.to_string().contains("extension-hosting"), "{err}");
 }

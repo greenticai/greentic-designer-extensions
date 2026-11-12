@@ -80,14 +80,17 @@ fn extension_hosting_parses_and_is_deliberately_narrow() {
         .find(|(_, w)| w.name == "hosting-extension")
         .expect("hosting-extension world");
     let names = |imports: bool| -> Vec<String> {
-        let map = if imports { &world.imports } else { &world.exports };
+        let map = if imports {
+            &world.imports
+        } else {
+            &world.exports
+        };
         map.keys()
             .map(|k| match k {
                 wit_parser::WorldKey::Name(n) => n.clone(),
-                wit_parser::WorldKey::Interface(id) => resolve.interfaces[*id]
-                    .name
-                    .clone()
-                    .unwrap_or_default(),
+                wit_parser::WorldKey::Interface(id) => {
+                    resolve.interfaces[*id].name.clone().unwrap_or_default()
+                }
             })
             .collect()
     };

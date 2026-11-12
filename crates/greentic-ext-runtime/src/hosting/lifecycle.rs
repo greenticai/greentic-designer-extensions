@@ -72,11 +72,7 @@ pub(crate) fn scrub_text(s: &str, max: usize) -> String {
     out
 }
 
-pub(crate) fn scrub_diagnostic(
-    level: DiagnosticLevel,
-    code: &str,
-    message: &str,
-) -> Diagnostic {
+pub(crate) fn scrub_diagnostic(level: DiagnosticLevel, code: &str, message: &str) -> Diagnostic {
     let code: String = code
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || "-_.".contains(*c))
@@ -115,9 +111,9 @@ pub(crate) fn validate_handle(
 ) -> Result<HostHandle, Refusal> {
     let host_ok = super::endpoint::well_formed_host(&h.host) && !h.host.contains(':');
     let extras_ok = h.extras.len() <= MAX_EXTRAS
-        && h.extras
-            .iter()
-            .all(|(k, v)| k.len() <= 64 && v.len() <= 256 && !k.chars().chain(v.chars()).any(char::is_control));
+        && h.extras.iter().all(|(k, v)| {
+            k.len() <= 64 && v.len() <= 256 && !k.chars().chain(v.chars()).any(char::is_control)
+        });
     if h.scheme == "https"
         && h.port != 0
         && host_ok
@@ -191,7 +187,11 @@ mod tests {
     #[test]
     fn fabricated_refs_are_dropped_from_the_owned_list() {
         let kept = filter_owned(
-            vec!["ecs:a/b".into(), "arn:aws:iam::1:root".into(), "ecs:".into()],
+            vec![
+                "ecs:a/b".into(),
+                "arn:aws:iam::1:root".into(),
+                "ecs:".into(),
+            ],
             "ecs:",
         );
         assert_eq!(kept, vec!["ecs:a/b".to_string()]);
@@ -199,7 +199,11 @@ mod tests {
 
     #[test]
     fn guest_text_is_scrubbed_and_bounded() {
-        let d = scrub_diagnostic(DiagnosticLevel::Error, "iam deny!\n", &format!("a\u{7}b{}", "x".repeat(2000)));
+        let d = scrub_diagnostic(
+            DiagnosticLevel::Error,
+            "iam deny!\n",
+            &format!("a\u{7}b{}", "x".repeat(2000)),
+        );
         assert_eq!(d.code, "iamdeny");
         assert!(d.message.starts_with("ab"));
         assert!(d.message.len() <= 512);

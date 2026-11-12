@@ -25,9 +25,9 @@ use crate::hosting::lifecycle::{
 use crate::hosting::port::NullPort;
 use crate::hosting::session::{HostingSession, SessionMeta};
 use crate::hosting::{
-    DestroyMode, Diagnostic, DiagnosticLevel, HOSTING_PROVIDER_CAPABILITY, HostError,
-    HostHandle, HostOutcome, HostSpec, HostingDeclaration, HostingError, HostingPort, RawDescriptor,
-    Refusal, TargetPolicy,
+    DestroyMode, Diagnostic, DiagnosticLevel, HOSTING_PROVIDER_CAPABILITY, HostError, HostHandle,
+    HostOutcome, HostSpec, HostingDeclaration, HostingError, HostingPort, RawDescriptor, Refusal,
+    TargetPolicy,
 };
 use crate::runtime::ExtensionRuntime;
 
@@ -140,7 +140,10 @@ impl HostingProvider<'_> {
 
     fn classify(e: &wasmtime::Error) -> HostingError {
         Self::trap(
-            matches!(e.downcast_ref::<wasmtime::Trap>(), Some(wasmtime::Trap::Interrupt)),
+            matches!(
+                e.downcast_ref::<wasmtime::Trap>(),
+                Some(wasmtime::Trap::Interrupt)
+            ),
             &format!("{e:#}"),
         )
     }
@@ -189,8 +192,8 @@ impl HostingProvider<'_> {
         let (mut store, instance) =
             self.rt
                 .dispatch_hosting(&self.ext_id, session, limits.invocation_timeout)?;
-        let world = wit::HostingExtension::new(&mut store, &instance)
-            .map_err(|e| Self::classify(&e))?;
+        let world =
+            wit::HostingExtension::new(&mut store, &instance).map_err(|e| Self::classify(&e))?;
         f(world.greentic_extension_hosting_provider(), &mut store).map_err(|e| Self::classify(&e))
     }
 
@@ -319,9 +322,11 @@ impl HostingProvider<'_> {
             size: spec.size.clone(),
             hosting_json: spec.hosting_json.clone(),
         };
-        self.invoke("ensure-host", |g, s| g.call_ensure_host(s, &wit_spec, host_id))?
-            .map_err(Self::host_error)
-            .and_then(|o| self.outcome(o))
+        self.invoke("ensure-host", |g, s| {
+            g.call_ensure_host(s, &wit_spec, host_id)
+        })?
+        .map_err(Self::host_error)
+        .and_then(|o| self.outcome(o))
     }
 
     /// Current state of a host.
@@ -365,7 +370,10 @@ impl From<RuntimeError> for HostingError {
     fn from(e: RuntimeError) -> Self {
         match e {
             RuntimeError::Wasmtime(err) => HostingProvider::trap(
-                matches!(err.downcast_ref::<wasmtime::Trap>(), Some(wasmtime::Trap::Interrupt)),
+                matches!(
+                    err.downcast_ref::<wasmtime::Trap>(),
+                    Some(wasmtime::Trap::Interrupt)
+                ),
                 &format!("{err:#}"),
             ),
             other => Self::Runtime(other),

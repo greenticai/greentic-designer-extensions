@@ -121,9 +121,9 @@ pub fn derive_action(headers: &[(String, String)], body: Option<&[u8]>) -> Optio
             return Some(v.rsplit('.').next().unwrap_or(v).to_string());
         }
     }
-    let form = headers
-        .iter()
-        .any(|(k, v)| k.eq_ignore_ascii_case("content-type") && v.contains("x-www-form-urlencoded"));
+    let form = headers.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("content-type") && v.contains("x-www-form-urlencoded")
+    });
     if !form {
         return None;
     }
@@ -146,7 +146,10 @@ pub fn validate_path(path: &str) -> Result<&str, &'static str> {
     if !path.starts_with('/') || path.starts_with("//") {
         return Err("path must start with a single '/'");
     }
-    if path.chars().any(|c| c.is_control() || c == '\\' || c == '#') {
+    if path
+        .chars()
+        .any(|c| c.is_control() || c == '\\' || c == '#')
+    {
         return Err("path has a forbidden character");
     }
     let only = path.split('?').next().unwrap_or(path);
@@ -279,6 +282,12 @@ pub fn host_matches(pattern: &str, host: &str) -> bool {
     )
 }
 
+fn has_suffix(name: &str, tld: &str) -> bool {
+    name.len() > tld.len()
+        && name.as_bytes()[name.len() - tld.len() - 1] == b'.'
+        && name.ends_with(tld)
+}
+
 /// Loopback, private, link-local and metadata destinations by name or literal.
 /// Public-only by default: a private API host needs an explicit platform entry.
 #[must_use]
@@ -287,9 +296,9 @@ pub(crate) fn is_private_host(h: &str) -> bool {
     if name == "localhost"
         || name.ends_with(".localhost")
         || name.ends_with(".internal")
-        || name.ends_with(".local")
-        || name.ends_with(".localdomain")
-        || name.ends_with(".lan")
+        || has_suffix(name, "local")
+        || has_suffix(name, "localdomain")
+        || has_suffix(name, "lan")
         || !name.contains('.')
     {
         return true;

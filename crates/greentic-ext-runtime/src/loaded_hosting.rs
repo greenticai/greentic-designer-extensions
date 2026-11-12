@@ -20,11 +20,11 @@
 
 use std::time::Duration;
 
-use wasmtime::component::{HasData, Instance, Linker, ResourceTable};
 use wasmtime::Store;
+use wasmtime::component::{HasData, Instance, Linker, ResourceTable};
+use wasmtime_wasi::WasiView;
 use wasmtime_wasi::cli::{WasiCli, WasiCliView};
 use wasmtime_wasi::p2::bindings::{cli, sync};
-use wasmtime_wasi::WasiView;
 
 use crate::host_state::HostState;
 use crate::hosting::session::HostingSession;

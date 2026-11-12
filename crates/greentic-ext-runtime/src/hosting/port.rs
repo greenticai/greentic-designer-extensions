@@ -1,7 +1,7 @@
 //! The seam between the policy engine and whoever holds the credentials.
 //!
 //! The runtime decides WHETHER a call may happen; the embedder's
-//! [`HostingPort`] decides HOW it is authorised and carried (SigV4 signing,
+//! [`HostingPort`] decides HOW it is authorised and carried (`SigV4` signing,
 //! a bearer header, a kubeconfig token) and holds every secret. The port never
 //! sees a request the policy refused, and the guest never sees anything the
 //! port holds.
@@ -95,7 +95,7 @@ pub enum PortError {
     TooLarge,
 }
 
-/// Implemented by the embedder (the admin, over its SigV4 client; the mock in
+/// Implemented by the embedder (the admin, over its `SigV4` client; the mock in
 /// [`super::mock`]).
 pub trait HostingPort: Send + Sync {
     /// A NON-SECRET setting of the target (`region`, `cluster`, ...). The

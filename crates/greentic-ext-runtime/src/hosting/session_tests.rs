@@ -56,7 +56,10 @@ fn policy() -> TargetPolicy {
     )
 }
 
-fn session_with(port: MockHostingPort, policy: TargetPolicy) -> (HostingSession, Arc<MemoryAuditSink>, Arc<MockHostingPort>) {
+fn session_with(
+    port: MockHostingPort,
+    policy: TargetPolicy,
+) -> (HostingSession, Arc<MemoryAuditSink>, Arc<MockHostingPort>) {
     let sink = Arc::new(MemoryAuditSink::new());
     let port = Arc::new(port);
     let s = HostingSession::new(
@@ -82,7 +85,13 @@ fn target(action: &str) -> Vec<(String, String)> {
 fn an_approved_call_is_carried_and_audited_without_a_body() {
     let (mut s, sink, port) = session_with(port(), policy());
     let r = s
-        .call("aws.ecs", "POST", "/", Some(b"{}".to_vec()), target("DescribeServices"))
+        .call(
+            "aws.ecs",
+            "POST",
+            "/",
+            Some(b"{}".to_vec()),
+            target("DescribeServices"),
+        )
         .expect("approved call");
     assert_eq!(r.status, 200);
     let seen = port.seen();
@@ -103,7 +112,8 @@ fn undeclared_endpoints_and_actions_are_refused_and_audited() {
         ApiError::NotDeclared
     );
     assert_eq!(
-        s.call("aws.ecs", "POST", "/", None, target("DeleteCluster")).unwrap_err(),
+        s.call("aws.ecs", "POST", "/", None, target("DeleteCluster"))
+            .unwrap_err(),
         ApiError::DeniedByPolicy
     );
     assert_eq!(
@@ -126,7 +136,11 @@ fn request_shape_rules_run_before_anything_is_carried() {
         ("TRACE", "/", ok.clone()),
         ("POST", "//evil.com/", ok.clone()),
         ("POST", "/../x", ok.clone()),
-        ("POST", "/", vec![("authorization".into(), "x".into()), ok[0].clone()]),
+        (
+            "POST",
+            "/",
+            vec![("authorization".into(), "x".into()), ok[0].clone()],
+        ),
     ] {
         assert_eq!(
             s.call("aws.ecs", method, path, None, headers).unwrap_err(),
@@ -165,7 +179,10 @@ fn the_host_must_be_inside_the_platform_allow_list_and_public() {
         s.call("k8s.api", "GET", "/api/v1/namespaces/x", None, vec![])
     };
     let mut allow_range = TargetPolicy::new(vec!["10.1.2.3".into()], vec![]);
-    assert_eq!(k8s(allow_range.clone()).unwrap_err(), ApiError::DeniedByPolicy);
+    assert_eq!(
+        k8s(allow_range.clone()).unwrap_err(),
+        ApiError::DeniedByPolicy
+    );
     allow_range.private_hosts = vec!["10.1.2.3:6443".into()];
     assert!(k8s(allow_range).is_ok());
 }
@@ -181,7 +198,8 @@ fn the_call_budget_counts_refused_calls_too() {
         let _ = s.call("evil", "GET", "/", None, vec![]);
     }
     assert_eq!(
-        s.call("aws.ecs", "POST", "/", None, target("DescribeServices")).unwrap_err(),
+        s.call("aws.ecs", "POST", "/", None, target("DescribeServices"))
+            .unwrap_err(),
         ApiError::DeniedByPolicy
     );
     assert_eq!(sink.events()[3].outcome, Outcome::Denied("call-budget"));
@@ -196,7 +214,8 @@ fn the_invocation_deadline_stops_further_calls() {
     let (mut s, _k, port) = session_with(port(), policy().with_limits(limits));
     std::thread::sleep(Duration::from_millis(60));
     assert_eq!(
-        s.call("aws.ecs", "POST", "/", None, target("DescribeServices")).unwrap_err(),
+        s.call("aws.ecs", "POST", "/", None, target("DescribeServices"))
+            .unwrap_err(),
         ApiError::Timeout
     );
     assert!(port.seen().is_empty());
@@ -213,7 +232,8 @@ fn a_port_that_overruns_its_deadline_is_a_timeout() {
         policy().with_limits(limits),
     );
     assert_eq!(
-        s.call("aws.ecs", "POST", "/", None, target("DescribeServices")).unwrap_err(),
+        s.call("aws.ecs", "POST", "/", None, target("DescribeServices"))
+            .unwrap_err(),
         ApiError::Timeout
     );
     assert_eq!(port.seen()[0].timeout, Duration::from_millis(20));
@@ -227,15 +247,27 @@ fn sizes_are_capped_both_ways() {
         ..HostingLimits::default()
     };
     let big = port().respond(|_| {
-        Ok(PortResponse { status: 200, headers: vec![], body: vec![b'x'; 17] })
+        Ok(PortResponse {
+            status: 200,
+            headers: vec![],
+            body: vec![b'x'; 17],
+        })
     });
     let (mut s, sink, port) = session_with(big, policy().with_limits(limits));
     assert_eq!(
-        s.call("aws.ecs", "POST", "/", Some(vec![0; 9]), target("DescribeServices")).unwrap_err(),
+        s.call(
+            "aws.ecs",
+            "POST",
+            "/",
+            Some(vec![0; 9]),
+            target("DescribeServices")
+        )
+        .unwrap_err(),
         ApiError::DeniedByPolicy
     );
     assert_eq!(
-        s.call("aws.ecs", "POST", "/", None, target("DescribeServices")).unwrap_err(),
+        s.call("aws.ecs", "POST", "/", None, target("DescribeServices"))
+            .unwrap_err(),
         ApiError::TooLarge
     );
     assert_eq!(port.seen().len(), 1);
@@ -246,7 +278,8 @@ fn sizes_are_capped_both_ways() {
         .respond(|_| Err(PortError::TooLarge));
     let (mut s, _k, _p) = session_with(err, policy());
     assert_eq!(
-        s.call("aws.ecs", "POST", "/", None, target("DescribeServices")).unwrap_err(),
+        s.call("aws.ecs", "POST", "/", None, target("DescribeServices"))
+            .unwrap_err(),
         ApiError::TooLarge
     );
 }
@@ -266,11 +299,21 @@ fn placeholders_are_substituted_host_side_and_the_value_never_comes_back() {
         })
     });
     let (mut s, sink, port) = session_with(echo, policy());
-    let body = br#"{"SecretString":"${resource.credential}","tag":"${resource.credential_fingerprint}"}"#;
+    let body =
+        br#"{"SecretString":"${resource.credential}","tag":"${resource.credential_fingerprint}"}"#;
     let mut headers = target("CreateSecret");
-    headers.push(("idempotency-key".into(), "k-${resource.credential_fingerprint}".into()));
+    headers.push((
+        "idempotency-key".into(),
+        "k-${resource.credential_fingerprint}".into(),
+    ));
     let r = s
-        .call("aws.secretsmanager", "POST", "/", Some(body.to_vec()), headers)
+        .call(
+            "aws.secretsmanager",
+            "POST",
+            "/",
+            Some(body.to_vec()),
+            headers,
+        )
         .expect("create secret");
 
     // The provider API received the real value ...
@@ -282,7 +325,11 @@ fn placeholders_are_substituted_host_side_and_the_value_never_comes_back() {
     assert!(!back.contains(CRED), "{back}");
     assert!(back.contains("[redacted]") && back.contains("fp-abc"));
     // Only benign response headers survive, themselves redacted.
-    let names: Vec<_> = r.headers.iter().map(|(k, _)| k.to_ascii_lowercase()).collect();
+    let names: Vec<_> = r
+        .headers
+        .iter()
+        .map(|(k, _)| k.to_ascii_lowercase())
+        .collect();
     assert_eq!(names, vec!["content-type", "x-amz-request-id"]);
     assert!(r.headers.iter().all(|(_, v)| !v.contains(CRED)));
     // The audit stream names the call and nothing it carried.
@@ -291,15 +338,13 @@ fn placeholders_are_substituted_host_side_and_the_value_never_comes_back() {
 
 #[test]
 fn values_the_port_holds_are_redacted_too() {
-    let echo = port()
-        .also_redact("AKIAEXAMPLEKEYID0001")
-        .respond(|_| {
-            Ok(PortResponse {
-                status: 200,
-                headers: vec![],
-                body: b"signed by AKIAEXAMPLEKEYID0001".to_vec(),
-            })
-        });
+    let echo = port().also_redact("AKIAEXAMPLEKEYID0001").respond(|_| {
+        Ok(PortResponse {
+            status: 200,
+            headers: vec![],
+            body: b"signed by AKIAEXAMPLEKEYID0001".to_vec(),
+        })
+    });
     let (mut s, _k, _p) = session_with(echo, policy());
     let r = s
         .call("aws.ecs", "POST", "/", None, target("DescribeServices"))
@@ -335,8 +380,12 @@ fn target_get_never_answers_with_key_material() {
     assert_eq!(s.target_get("region").as_deref(), Some("eu-west-1"));
     assert_eq!(s.target_get("kms_key_id").as_deref(), Some("alias/ok"));
     assert_eq!(s.target_get("installation-id").as_deref(), Some("inst-1"));
-    assert_eq!(s.target_get("credential-fingerprint").as_deref(), Some("fp-abc"));
-    let tags: Vec<[String; 2]> = serde_json::from_str(&s.target_get("owner-tags").unwrap()).unwrap();
+    assert_eq!(
+        s.target_get("credential-fingerprint").as_deref(),
+        Some("fp-abc")
+    );
+    let tags: Vec<[String; 2]> =
+        serde_json::from_str(&s.target_get("owner-tags").unwrap()).unwrap();
     assert_eq!(tags[0][1], "inst-1");
 }
 
@@ -354,16 +403,27 @@ fn limits_are_clamped_to_the_platform_maximum() {
     let l = HostingLimits {
         max_request_bytes: usize::MAX,
         max_response_bytes: usize::MAX,
-        call_timeout: Duration::from_secs(86_400),
-        invocation_timeout: Duration::from_secs(86_400),
+        call_timeout: Duration::from_hours(24),
+        invocation_timeout: Duration::from_hours(24),
         max_calls: u32::MAX,
         max_log_lines: u32::MAX,
         max_log_bytes: usize::MAX,
     }
     .clamped();
     assert_eq!(l.max_calls, crate::hosting::platform_max::CALLS);
-    assert_eq!(l.invocation_timeout, crate::hosting::platform_max::INVOCATION_TIMEOUT);
-    assert_eq!(l.max_response_bytes, crate::hosting::platform_max::RESPONSE_BYTES);
-    let z = HostingLimits { max_calls: 0, call_timeout: Duration::ZERO, ..HostingLimits::default() }.clamped();
+    assert_eq!(
+        l.invocation_timeout,
+        crate::hosting::platform_max::INVOCATION_TIMEOUT
+    );
+    assert_eq!(
+        l.max_response_bytes,
+        crate::hosting::platform_max::RESPONSE_BYTES
+    );
+    let z = HostingLimits {
+        max_calls: 0,
+        call_timeout: Duration::ZERO,
+        ..HostingLimits::default()
+    }
+    .clamped();
     assert!(z.max_calls >= 1 && !z.call_timeout.is_zero());
 }

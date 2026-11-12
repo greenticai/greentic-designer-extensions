@@ -8,7 +8,6 @@ mod error;
 mod ext_error;
 pub mod guardrail_map;
 mod health;
-pub mod hosting;
 pub mod host_bindings;
 pub mod host_ports;
 mod host_state;
@@ -18,6 +17,7 @@ mod host_state_llm;
 mod host_state_net;
 mod host_state_oauth;
 mod host_state_ports;
+pub mod hosting;
 mod http_scheme_policy;
 pub mod infra_grant;
 mod infra_grant_policy;
@@ -64,10 +64,10 @@ pub use self::host_ports::{
 pub use self::host_state::HostState;
 pub use self::limits::DEFAULT_DISPATCH_TIMEOUT;
 pub use self::loaded::{ExtensionId, HostOverrides, LoadedExtension, LoadedExtensionRef};
-pub use self::runtime_hosting::{HostingContext, HostingProvider};
 pub use self::runtime::{ExtensionRuntime, RuntimeEvent, WatcherGuard};
 pub use self::runtime_config::RuntimeConfig;
 pub use self::runtime_design::contribution_tool_to_definition;
+pub use self::runtime_hosting::{HostingContext, HostingProvider};
 pub use self::runtime_views::view_to_definition;
 pub use self::types::{
     BundleArtifact, BundleSession, CompileContext, DeployExtensionError, DeployJob, DeployRequest,

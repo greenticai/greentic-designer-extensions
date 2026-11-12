@@ -34,17 +34,29 @@ pub fn guest_wasm(sleeper: bool) -> Vec<u8> {
         .get_or_init(|| std::sync::Mutex::new(()))
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join(if sleeper { "hosting-guest-sleeper" } else { "hosting-guest" });
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(if sleeper {
+        "hosting-guest-sleeper"
+    } else {
+        "hosting-guest"
+    });
     let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
-    cmd.args(["build", "--release", "--locked", "--target", "wasm32-wasip2", "--manifest-path"])
-        .arg(guest_manifest())
-        .env("CARGO_TARGET_DIR", &dir)
-        .env_remove("CARGO_BUILD_BUILD_DIR");
+    cmd.args([
+        "build",
+        "--release",
+        "--locked",
+        "--target",
+        "wasm32-wasip2",
+        "--manifest-path",
+    ])
+    .arg(guest_manifest())
+    .env("CARGO_TARGET_DIR", &dir)
+    .env_remove("CARGO_BUILD_BUILD_DIR");
     if sleeper {
         cmd.args(["--features", "sleeper"]);
     }
-    let out = cmd.output().expect("run cargo to build the hosting test guest");
+    let out = cmd
+        .output()
+        .expect("run cargo to build the hosting test guest");
     assert!(
         out.status.success(),
         "building the hosting test guest failed (is the wasm32-wasip2 target installed?):\n{}",
@@ -87,7 +99,13 @@ pub struct Harness {
     _trust: tempfile::TempDir,
 }
 
-pub fn harness(kind: ExtensionKind, id: &str, wasm: Vec<u8>, hosting: bool, timeout: Option<Duration>) -> Harness {
+pub fn harness(
+    kind: ExtensionKind,
+    id: &str,
+    wasm: Vec<u8>,
+    hosting: bool,
+    timeout: Option<Duration>,
+) -> Harness {
     let trust = tempfile::TempDir::new().expect("trust root");
     let mut cfg = RuntimeConfig::from_paths(DiscoveryPaths::new(PathBuf::from("/dev/null")))
         .with_trust_root(trust.path().to_path_buf());
@@ -97,7 +115,12 @@ pub fn harness(kind: ExtensionKind, id: &str, wasm: Vec<u8>, hosting: bool, time
     let mut rt = ExtensionRuntime::new(cfg).expect("runtime");
     let fx = pack(kind, id, wasm, hosting);
     rt.register_loaded_from_dir(fx.root()).expect("register");
-    Harness { rt, fx, id: id.to_string(), _trust: trust }
+    Harness {
+        rt,
+        fx,
+        id: id.to_string(),
+        _trust: trust,
+    }
 }
 
 /// A port with a plausible target and the fake credential.
@@ -113,11 +136,23 @@ pub fn port() -> MockHostingPort {
 }
 
 pub fn policy() -> TargetPolicy {
-    TargetPolicy::new(vec!["*.amazonaws.com".into()], vec!["infra.example.com".into()])
+    TargetPolicy::new(
+        vec!["*.amazonaws.com".into()],
+        vec!["infra.example.com".into()],
+    )
 }
 
-pub fn ctx(port: Arc<MockHostingPort>, policy: TargetPolicy, audit: Arc<MemoryAuditSink>) -> HostingContext {
-    HostingContext { target_id: "t1".into(), port, policy, audit }
+pub fn ctx(
+    port: Arc<MockHostingPort>,
+    policy: TargetPolicy,
+    audit: Arc<MemoryAuditSink>,
+) -> HostingContext {
+    HostingContext {
+        target_id: "t1".into(),
+        port,
+        policy,
+        audit,
+    }
 }
 
 /// A target that makes the guest run `scenario`.

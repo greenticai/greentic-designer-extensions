@@ -11,8 +11,8 @@ pub mod platform_max {
     use std::time::Duration;
     pub const REQUEST_BYTES: usize = 4 * 1024 * 1024;
     pub const RESPONSE_BYTES: usize = 32 * 1024 * 1024;
-    pub const CALL_TIMEOUT: Duration = Duration::from_secs(120);
-    pub const INVOCATION_TIMEOUT: Duration = Duration::from_secs(600);
+    pub const CALL_TIMEOUT: Duration = Duration::from_mins(2);
+    pub const INVOCATION_TIMEOUT: Duration = Duration::from_mins(10);
     pub const CALLS: u32 = 1000;
     pub const LOG_LINES: u32 = 500;
 }
@@ -36,7 +36,7 @@ impl Default for HostingLimits {
             max_request_bytes: 1024 * 1024,
             max_response_bytes: 8 * 1024 * 1024,
             call_timeout: Duration::from_secs(30),
-            invocation_timeout: Duration::from_secs(120),
+            invocation_timeout: Duration::from_mins(2),
             max_calls: 150,
             max_log_lines: 100,
             max_log_bytes: 512,

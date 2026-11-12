@@ -22,12 +22,12 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use super::audit::{AuditEvent, AuditSink, Outcome};
 use super::declaration::HostingDeclaration;
 use super::endpoint::{
     ALLOWED_METHODS, ALLOWED_RESPONSE_HEADERS, action_allowed, derive_action, host_matches,
     is_private_host, resolve_host, validate_headers, validate_path,
 };
-use super::audit::{AuditEvent, AuditSink, Outcome};
 use super::placeholder::{Substitutions, redact_bytes, redact_text};
 use super::policy::TargetPolicy;
 use super::port::{AuthorizedCall, HostingPort, PortError, SecretValue};
@@ -289,7 +289,10 @@ impl HostingSession {
         }
         let path_only = validate_path(path).map_err(Refused::Deny)?;
         validate_headers(&headers).map_err(Refused::Deny)?;
-        if body.as_ref().is_some_and(|b| b.len() > limits.max_request_bytes) {
+        if body
+            .as_ref()
+            .is_some_and(|b| b.len() > limits.max_request_bytes)
+        {
             return Err(Refused::Deny("request-too-large"));
         }
         let action = derive_action(&headers, body.as_deref());
@@ -306,7 +309,7 @@ impl HostingSession {
         if !self.policy.api_hosts.iter().any(|p| host_matches(p, &host)) {
             return Err(Refused::Deny("host-not-allowed"));
         }
-        if is_private_host(&host) && !self.policy.private_hosts.iter().any(|p| *p == host) {
+        if is_private_host(&host) && !self.policy.private_hosts.contains(&host) {
             return Err(Refused::Deny("private-host"));
         }
 
@@ -319,7 +322,10 @@ impl HostingSession {
             .map(|(k, v)| (k, subs.apply(&v)))
             .collect();
         let body = body.map(|b| subs.apply_body(b));
-        if body.as_ref().is_some_and(|b| b.len() > limits.max_request_bytes) {
+        if body
+            .as_ref()
+            .is_some_and(|b| b.len() > limits.max_request_bytes)
+        {
             return Err(Refused::Deny("request-too-large"));
         }
         let timeout = limits.call_timeout.min(remaining);
@@ -353,7 +359,9 @@ impl HostingSession {
             headers: resp
                 .headers
                 .into_iter()
-                .filter(|(k, _)| ALLOWED_RESPONSE_HEADERS.contains(&k.to_ascii_lowercase().as_str()))
+                .filter(|(k, _)| {
+                    ALLOWED_RESPONSE_HEADERS.contains(&k.to_ascii_lowercase().as_str())
+                })
                 .map(|(k, v)| (k, redact_text(&v, &refs)))
                 .collect(),
             body: redact_bytes(resp.body, &refs),

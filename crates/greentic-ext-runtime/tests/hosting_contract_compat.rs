@@ -16,7 +16,8 @@ use serde_json::{Value, json};
 fn describe_value() -> Value {
     let wasm = wat::parse_str("(component)").unwrap();
     let fx = support::hosting::pack(ExtensionKind::Deploy, "greentic.hosting-compat", wasm, true);
-    serde_json::from_str(&std::fs::read_to_string(fx.root().join("describe.json")).unwrap()).unwrap()
+    serde_json::from_str(&std::fs::read_to_string(fx.root().join("describe.json")).unwrap())
+        .unwrap()
 }
 
 fn parses(v: &Value) -> Result<DescribeJson, serde_json::Error> {
@@ -29,10 +30,18 @@ fn a_hosting_provider_describe_is_an_ordinary_deploy_describe() {
     assert_eq!(v["kind"], "DeployExtension");
     let d = parses(&v).expect("the current contract reads it");
     assert_eq!(d.kind, ExtensionKind::Deploy);
-    assert!(d.capabilities.offered.iter().any(|c| c.id.as_str() == HOSTING_PROVIDER_CAPABILITY));
+    assert!(
+        d.capabilities
+            .offered
+            .iter()
+            .any(|c| c.id.as_str() == HOSTING_PROVIDER_CAPABILITY)
+    );
     // Round-trips, so re-signing a describe never drops the capability.
     let again = parses(&serde_json::to_value(&d).unwrap()).unwrap();
-    assert_eq!(again.capabilities.offered.len(), d.capabilities.offered.len());
+    assert_eq!(
+        again.capabilities.offered.len(),
+        d.capabilities.offered.len()
+    );
 }
 
 #[test]
@@ -43,15 +52,24 @@ fn the_capability_id_must_fit_the_describe_schema() {
     let mut v = describe_value();
     v["capabilities"]["offered"][0]["id"] = json!("cap://hosting/provider");
     let wasm = wat::parse_str("(component)").unwrap();
-    let fx = support::hosting::pack(ExtensionKind::Deploy, "greentic.hosting-compat2", wasm, true);
+    let fx = support::hosting::pack(
+        ExtensionKind::Deploy,
+        "greentic.hosting-compat2",
+        wasm,
+        true,
+    );
     let path = fx.root().join("describe.json");
     std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
     let mut rt = greentic_ext_runtime::ExtensionRuntime::new(
-        greentic_ext_runtime::RuntimeConfig::from_paths(greentic_ext_runtime::DiscoveryPaths::new("/dev/null".into()))
-            .with_trust_root(tempfile::TempDir::new().unwrap().keep()),
+        greentic_ext_runtime::RuntimeConfig::from_paths(greentic_ext_runtime::DiscoveryPaths::new(
+            "/dev/null".into(),
+        ))
+        .with_trust_root(tempfile::TempDir::new().unwrap().keep()),
     )
     .unwrap();
-    let err = rt.register_loaded_from_dir(fx.root()).expect_err("schema must refuse it");
+    let err = rt
+        .register_loaded_from_dir(fx.root())
+        .expect_err("schema must refuse it");
     assert!(err.to_string().contains("does not match"), "{err}");
 }
 
@@ -91,5 +109,10 @@ fn an_older_shaped_describe_without_the_capability_still_parses() {
     let mut v = describe_value();
     v["capabilities"]["offered"] = json!([{"id": "greentic:test/ping", "version": "1.0.0"}]);
     let d = parses(&v).expect("older shape");
-    assert!(!d.capabilities.offered.iter().any(|c| c.id.as_str() == HOSTING_PROVIDER_CAPABILITY));
+    assert!(
+        !d.capabilities
+            .offered
+            .iter()
+            .any(|c| c.id.as_str() == HOSTING_PROVIDER_CAPABILITY)
+    );
 }

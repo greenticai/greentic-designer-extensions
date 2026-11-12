@@ -68,10 +68,9 @@ impl HostingError {
         match self {
             Self::Provider(e) => *e,
             Self::Deadline | Self::Trapped(_) => HostError::Unreachable,
-            Self::Refused(_)
-            | Self::NotAProvider(_)
-            | Self::Declaration(_)
-            | Self::Runtime(_) => HostError::Rejected,
+            Self::Refused(_) | Self::NotAProvider(_) | Self::Declaration(_) | Self::Runtime(_) => {
+                HostError::Rejected
+            }
         }
     }
 }

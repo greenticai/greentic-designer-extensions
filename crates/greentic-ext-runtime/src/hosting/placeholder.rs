@@ -98,7 +98,9 @@ mod tests {
             fingerprint: Some("fp1"),
         };
         assert_eq!(
-            subs.apply("{\"v\":\"${resource.credential}\",\"t\":\"${resource.credential_fingerprint}\"}"),
+            subs.apply(
+                "{\"v\":\"${resource.credential}\",\"t\":\"${resource.credential_fingerprint}\"}"
+            ),
             "{\"v\":\"s3cr3t-value\",\"t\":\"fp1\"}"
         );
         assert_eq!(
@@ -115,7 +117,10 @@ mod tests {
             credential: None,
             fingerprint: None,
         };
-        assert_eq!(subs.apply("${resource.credential}"), "${resource.credential}");
+        assert_eq!(
+            subs.apply("${resource.credential}"),
+            "${resource.credential}"
+        );
     }
 
     #[test]
@@ -123,7 +128,10 @@ mod tests {
         let out = redact_bytes(b"a s3cr3t-value b s3cr3t-value".to_vec(), &["s3cr3t-value"]);
         assert_eq!(out, b"a [redacted] b [redacted]");
         assert_eq!(redact_bytes(b"abcabc".to_vec(), &["ab"]), b"abcabc");
-        assert_eq!(redact_text("tok=s3cr3t-value", &["s3cr3t-value"]), "tok=[redacted]");
+        assert_eq!(
+            redact_text("tok=s3cr3t-value", &["s3cr3t-value"]),
+            "tok=[redacted]"
+        );
     }
 
     #[test]

@@ -162,6 +162,7 @@ impl HostingDeclaration {
     /// Never in practice: serialising already-parsed JSON values cannot fail.
     #[must_use]
     pub fn capability_hash(&self) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
         let mut endpoints: Vec<Value> = self
             .endpoints
             .iter()
@@ -189,7 +190,8 @@ impl HostingDeclaration {
         let digest = Sha256::digest(&canonical);
         let mut out = String::from("sha256:");
         for b in digest {
-            out.push_str(&format!("{b:02x}"));
+            out.push(char::from(HEX[usize::from(b >> 4)]));
+            out.push(char::from(HEX[usize::from(b & 0xf)]));
         }
         out
     }

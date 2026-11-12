@@ -25,9 +25,7 @@ pub use declaration::{
 pub use endpoint::{
     ALLOWED_METHODS, ALLOWED_REQUEST_HEADERS, ALLOWED_RESPONSE_HEADERS, ActionRule, host_matches,
 };
-pub use lifecycle::{
-    DestroyMode, Diagnostic, DiagnosticLevel, HostHandle, HostOutcome, HostSpec,
-};
 pub use error::{DeclarationError, HostError, HostingError, Refusal};
+pub use lifecycle::{DestroyMode, Diagnostic, DiagnosticLevel, HostHandle, HostOutcome, HostSpec};
 pub use policy::{HostingLimits, TargetPolicy, platform_max};
 pub use port::{AuthorizedCall, HostingPort, PortError, PortResponse, SecretValue, TargetContext};

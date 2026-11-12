@@ -90,8 +90,8 @@ impl MemoryAuditSink {
     pub fn events(&self) -> Vec<AuditEvent> {
         self.events
             .lock()
-            .map(|g| g.clone())
-            .unwrap_or_else(|p| p.into_inner().clone())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
