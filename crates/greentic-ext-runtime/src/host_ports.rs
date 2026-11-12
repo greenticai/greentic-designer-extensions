@@ -10,8 +10,9 @@ use std::sync::Mutex;
 use thiserror::Error;
 
 pub use crate::host_ports_knowledge::{
-    KnowledgeCreateRequest, KnowledgeCreated, KnowledgeDocument, KnowledgeDocumentInfo,
-    KnowledgePort, KnowledgePortError,
+    KnowledgeBaseInfo, KnowledgeCreateRequest, KnowledgeCreated, KnowledgeDocument,
+    KnowledgeDocumentInfo, KnowledgePort, KnowledgePortError, KnowledgeSearchHit,
+    KnowledgeSearchRequest, KnowledgeUpdateRequest, KnowledgeUpdated,
 };
 
 /// Look up i18n keys against a locale catalog set up by the host.

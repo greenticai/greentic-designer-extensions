@@ -6,9 +6,11 @@
 //! refusal never names a base or echoes document text.
 
 use crate::host_bindings::design_v04::greentic::extension_host::knowledge::{
-    self, Created, Document, DocumentInfo, KnowledgeError,
+    self, BaseInfo, Created, Document, DocumentInfo, KnowledgeError, SearchHit, Updated,
 };
-use crate::host_ports::{KnowledgeCreateRequest, KnowledgePortError};
+use crate::host_ports::{
+    KnowledgeCreateRequest, KnowledgePortError, KnowledgeSearchRequest, KnowledgeUpdateRequest,
+};
 use crate::host_state::HostState;
 use crate::knowledge_grant::{KnowledgeOp, declares};
 
@@ -17,6 +19,10 @@ use crate::knowledge_grant::{KnowledgeOp, declares};
 pub(crate) const MAX_KNOWLEDGE_TEXT_BYTES: usize = 10 * 1024 * 1024;
 /// Longest accepted knowledge-base name or document id, in bytes.
 pub(crate) const MAX_KNOWLEDGE_REF_BYTES: usize = 255;
+/// Most hits a search returns; a larger `limit` is clamped, `0` reads as 1.
+pub(crate) const MAX_SEARCH_LIMIT: u32 = 20;
+/// Longest accepted search query, in bytes.
+pub(crate) const MAX_SEARCH_QUERY_BYTES: usize = 4096;
 
 fn map_port_error(ext: &str, op: KnowledgeOp, err: KnowledgePortError) -> KnowledgeError {
     match err {
@@ -51,7 +57,7 @@ impl HostState {
     fn knowledge_gate(
         &self,
         op: KnowledgeOp,
-        base: &str,
+        base: Option<&str>,
     ) -> Result<std::sync::Arc<dyn crate::host_ports::KnowledgePort>, KnowledgeError> {
         if !declares(&self.permissions.network, op) {
             tracing::warn!(ext = %self.extension_id, op = op.as_str(), "knowledge call refused: operation not declared");
@@ -66,7 +72,7 @@ impl HostState {
             tracing::warn!(ext = %self.extension_id, op = op.as_str(), "knowledge call refused: no tenant");
             return Err(KnowledgeError::NotAllowed);
         }
-        if bad_base(base) {
+        if base.is_some_and(bad_base) {
             return Err(KnowledgeError::NotAllowed);
         }
         if let Some(port) = self.knowledge_port.as_ref() {
@@ -85,7 +91,7 @@ impl knowledge::Host for HostState {
         text: String,
     ) -> Result<Created, KnowledgeError> {
         let op = KnowledgeOp::Create;
-        let port = self.knowledge_gate(op, &knowledge_base)?;
+        let port = self.knowledge_gate(op, Some(&knowledge_base))?;
         // Caps live here once. Over-cap input is refused, never truncated.
         if text.len() > MAX_KNOWLEDGE_TEXT_BYTES {
             return Err(KnowledgeError::TooLarge);
@@ -124,7 +130,7 @@ impl knowledge::Host for HostState {
         document_id: String,
     ) -> Result<Document, KnowledgeError> {
         let op = KnowledgeOp::Read;
-        let port = self.knowledge_gate(op, &knowledge_base)?;
+        let port = self.knowledge_gate(op, Some(&knowledge_base))?;
         if bad_document_id(&document_id) {
             return Err(KnowledgeError::NotFound);
         }
@@ -145,7 +151,7 @@ impl knowledge::Host for HostState {
 
     fn list(&mut self, knowledge_base: String) -> Result<Vec<DocumentInfo>, KnowledgeError> {
         let op = KnowledgeOp::List;
-        let port = self.knowledge_gate(op, &knowledge_base)?;
+        let port = self.knowledge_gate(op, Some(&knowledge_base))?;
         let rows = port
             .list(&self.extension_id, &self.call_ctx, &knowledge_base)
             .map_err(|e| map_port_error(&self.extension_id, op, e))?;
@@ -165,7 +171,7 @@ impl knowledge::Host for HostState {
         document_id: String,
     ) -> Result<bool, KnowledgeError> {
         let op = KnowledgeOp::Remove;
-        let port = self.knowledge_gate(op, &knowledge_base)?;
+        let port = self.knowledge_gate(op, Some(&knowledge_base))?;
         if bad_document_id(&document_id) {
             return Err(KnowledgeError::NotFound);
         }
@@ -176,6 +182,95 @@ impl knowledge::Host for HostState {
             &document_id,
         )
         .map_err(|e| map_port_error(&self.extension_id, op, e))
+    }
+
+    fn list_bases(&mut self) -> Result<Vec<BaseInfo>, KnowledgeError> {
+        let op = KnowledgeOp::ListBases;
+        let port = self.knowledge_gate(op, None)?;
+        let bases = port
+            .list_bases(&self.extension_id, &self.call_ctx)
+            .map_err(|e| map_port_error(&self.extension_id, op, e))?;
+        Ok(bases
+            .into_iter()
+            .map(|b| BaseInfo {
+                name: b.name,
+                description: b.description,
+                document_count: b.document_count,
+            })
+            .collect())
+    }
+
+    fn search(
+        &mut self,
+        knowledge_base: String,
+        query: String,
+        limit: u32,
+    ) -> Result<Vec<SearchHit>, KnowledgeError> {
+        let op = KnowledgeOp::Search;
+        let port = self.knowledge_gate(op, Some(&knowledge_base))?;
+        if query.len() > MAX_SEARCH_QUERY_BYTES {
+            return Err(KnowledgeError::TooLarge);
+        }
+        // A blank query matches nothing; the port is not asked.
+        if query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = limit.clamp(1, MAX_SEARCH_LIMIT);
+        let hits = port
+            .search(
+                &self.extension_id,
+                &self.call_ctx,
+                KnowledgeSearchRequest {
+                    knowledge_base,
+                    query,
+                    limit,
+                },
+            )
+            .map_err(|e| map_port_error(&self.extension_id, op, e))?;
+        Ok(hits
+            .into_iter()
+            .take(limit as usize)
+            .map(|h| SearchHit {
+                document_id: h.document_id,
+                name: h.name,
+                passage: h.passage,
+                score: h.score,
+            })
+            .collect())
+    }
+
+    fn update(
+        &mut self,
+        knowledge_base: String,
+        document_id: String,
+        text: String,
+    ) -> Result<Updated, KnowledgeError> {
+        let op = KnowledgeOp::Update;
+        let port = self.knowledge_gate(op, Some(&knowledge_base))?;
+        if bad_document_id(&document_id) {
+            return Err(KnowledgeError::NotFound);
+        }
+        if text.len() > MAX_KNOWLEDGE_TEXT_BYTES {
+            return Err(KnowledgeError::TooLarge);
+        }
+        let updated = port
+            .update(
+                &self.extension_id,
+                &self.call_ctx,
+                KnowledgeUpdateRequest {
+                    knowledge_base,
+                    document_id,
+                    text,
+                },
+            )
+            .map_err(|e| map_port_error(&self.extension_id, op, e))?;
+        if updated.document_id.trim().is_empty() {
+            tracing::warn!(ext = %self.extension_id, "knowledge port returned a blank document id");
+            return Err(KnowledgeError::Unavailable);
+        }
+        Ok(Updated {
+            document_id: updated.document_id,
+        })
     }
 }
 

@@ -44,6 +44,49 @@ pub struct KnowledgeDocumentInfo {
     pub size_chars: u64,
 }
 
+/// One base [`KnowledgePort::list_bases`] reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeBaseInfo {
+    pub name: String,
+    pub description: String,
+    pub document_count: u64,
+}
+
+/// A search request. `limit` is already clamped to `1..=MAX_SEARCH_LIMIT`
+/// (20) by the runtime; a port may return fewer hits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeSearchRequest {
+    pub knowledge_base: String,
+    pub query: String,
+    pub limit: u32,
+}
+
+/// One hit of [`KnowledgePort::search`]. `passage` is an excerpt the port has
+/// already truncated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KnowledgeSearchHit {
+    pub document_id: String,
+    pub name: String,
+    pub passage: String,
+    pub score: f32,
+}
+
+/// A request to replace a document's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeUpdateRequest {
+    pub knowledge_base: String,
+    pub document_id: String,
+    pub text: String,
+}
+
+/// Result of a successful [`KnowledgePort::update`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeUpdated {
+    /// The document's id after the update. May differ from the id passed in,
+    /// because ids are content hashes.
+    pub document_id: String,
+}
+
 /// Why a knowledge port call failed. The variants map one-to-one onto the WIT
 /// `knowledge-error`. None of them may carry document text; `Unavailable`'s
 /// detail is logged host-side and never returned to the guest.
@@ -118,4 +161,43 @@ pub trait KnowledgePort: Send + Sync {
         knowledge_base: &str,
         document_id: &str,
     ) -> Result<bool, KnowledgePortError>;
+
+    /// List the bases this call may use. The port decides the scope from `ctx`.
+    ///
+    /// Default: [`KnowledgePortError::Unavailable`], so a port written before
+    /// this operation existed keeps compiling and reports the honest reason.
+    fn list_bases(
+        &self,
+        _extension_id: &str,
+        _ctx: &HostCallContext,
+    ) -> Result<Vec<KnowledgeBaseInfo>, KnowledgePortError> {
+        Err(KnowledgePortError::Unavailable(
+            "list-bases not supported by this host".into(),
+        ))
+    }
+
+    /// Search `request.knowledge_base`. Returning more than `request.limit`
+    /// hits is harmless: the runtime truncates.
+    fn search(
+        &self,
+        _extension_id: &str,
+        _ctx: &HostCallContext,
+        _request: KnowledgeSearchRequest,
+    ) -> Result<Vec<KnowledgeSearchHit>, KnowledgePortError> {
+        Err(KnowledgePortError::Unavailable(
+            "search not supported by this host".into(),
+        ))
+    }
+
+    /// Replace a document's text in `request.knowledge_base`.
+    fn update(
+        &self,
+        _extension_id: &str,
+        _ctx: &HostCallContext,
+        _request: KnowledgeUpdateRequest,
+    ) -> Result<KnowledgeUpdated, KnowledgePortError> {
+        Err(KnowledgePortError::Unavailable(
+            "update not supported by this host".into(),
+        ))
+    }
 }

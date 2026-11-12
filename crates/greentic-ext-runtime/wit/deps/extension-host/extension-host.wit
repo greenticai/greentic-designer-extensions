@@ -127,7 +127,8 @@ interface artifact {
 /// text document in a knowledge base, read one back, list a base's documents,
 /// and remove one from a base. The host decides the tenant, the team and which
 /// bases the call may touch; a guest only ever names a base by the name an
-/// operator sees. Each operation must also be declared by the extension as a
+/// operator sees. Each operation (`create`, `read`, `list`, `remove`,
+/// `list-bases`, `search`, `update`) must also be declared by the extension as a
 /// `knowledge://<op>` token in `runtime.permissions.network`.
 interface knowledge {
   /// Closed set of failures. None of them carries document text.
@@ -168,6 +169,25 @@ interface knowledge {
     size-chars: u64,
   }
 
+  record base-info {
+    name: string,
+    description: string,
+    document-count: u64,
+  }
+
+  record search-hit {
+    document-id: string,
+    name: string,
+    /// A host-truncated excerpt of the matching text.
+    passage: string,
+    score: f32,
+  }
+
+  record updated {
+    /// May differ from the id passed in: ids are content hashes.
+    document-id: string,
+  }
+
   /// Create a document from `text` in the base named `knowledge-base`.
   create: func(knowledge-base: string, name: string, text: string) -> result<created, knowledge-error>;
   /// Read one document of the base.
@@ -177,6 +197,13 @@ interface knowledge {
   /// Remove a document from the base. The library document itself is kept.
   /// Returns false when it was not a member.
   remove: func(knowledge-base: string, document-id: string) -> result<bool, knowledge-error>;
+  /// List the bases this call may use. The host decides the scope.
+  list-bases: func() -> result<list<base-info>, knowledge-error>;
+  /// Search the base. The host caps `limit` (at most 20) and decides how it
+  /// matches (semantic or lexical).
+  search: func(knowledge-base: string, query: string, limit: u32) -> result<list<search-hit>, knowledge-error>;
+  /// Replace a document's text. Returns the document's id afterwards.
+  update: func(knowledge-base: string, document-id: string, text: string) -> result<updated, knowledge-error>;
 }
 
 world extension-host-world {

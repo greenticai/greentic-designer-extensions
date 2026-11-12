@@ -121,7 +121,8 @@ SDK-contract release because `Permissions` is `deny_unknown_fields`.
 
 `host.knowledge.*` is gated per operation by a token in `network`:
 `knowledge://create`, `knowledge://read`, `knowledge://list`,
-`knowledge://remove`. Exact spelling only: no wildcard, no case folding, and a
+`knowledge://remove`, `knowledge://list-bases`, `knowledge://search`,
+`knowledge://update`. Exact spelling only: no wildcard, no case folding, and a
 token naming any other operation grants nothing. A call to an undeclared
 operation answers `not-allowed` before the host port sees it. The tokens are
 stripped before the URL allow-list is built, so they never widen network

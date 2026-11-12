@@ -112,6 +112,22 @@ be walked around entirely, which is why the security list below reads as pairs.
 
 ### Added
 
+- **`host.knowledge` is general, not write-only: `list-bases`, `search`,
+  `update`.** Three more functions on `greentic:extension-host/knowledge@0.1.0`
+  (the four existing ones unchanged), each gated by its own token
+  (`knowledge://list-bases`, `knowledge://search`, `knowledge://update`) in
+  `runtime.permissions.network`. `list-bases` returns the bases the host allows
+  for this call (`name`, `description`, `document-count`); `search` takes a base,
+  a query and a limit, clamped by the runtime to 1..=20, and returns hits
+  (`document-id`, `name`, a host-truncated `passage`, `score`); a blank query
+  returns no hits without asking the port, and a query over 4096 bytes is
+  `too-large`. `update` replaces a document's text (10 MiB cap) and returns the
+  document's id afterwards, which may differ because ids are content hashes.
+  On `KnowledgePort` the three methods have default bodies answering
+  `Unavailable`, so a port written for the first four still compiles. The
+  interface stays at 0.1.0: no guest of the earlier shape was published, and a
+  guest that imports only the first four links against this host unchanged.
+
 - **`host.knowledge.*` (`greentic:extension-host/knowledge@0.1.0`).** A design
   extension can create a text document in a knowledge base, read one back,
   list a base's documents, and remove one from a base, through the new

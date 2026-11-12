@@ -6,7 +6,9 @@
 ;;              (create: `created`, read: `truncated`, remove: the bool)
 ;;   bits 16-31 on ok: a length (create: document-id, read: text, list: rows)
 ;; Arguments: knowledge-base "Handbook", name "note.md", text "hello",
-;; document-id "doc-1".
+;; document-id "doc-1", query "refund" (limit 50).
+;; General probes (list-bases, search, update) put a list length or the
+;; returned document-id length in bits 16-31.
 (component
   (type $kty (instance
     (type (;0;) (variant (case "not-allowed") (case "not-found") (case "too-large")
@@ -31,6 +33,23 @@
     (type (;15;) (result bool (error 1)))
     (type (;16;) (func (param "knowledge-base" string) (param "document-id" string) (result 15)))
     (export "remove" (func (type 16)))
+    (type (;17;) (record (field "name" string) (field "description" string) (field "document-count" u64)))
+    (export (;18;) "base-info" (type (eq 17)))
+    (type (;19;) (record (field "document-id" string) (field "name" string) (field "passage" string) (field "score" f32)))
+    (export (;20;) "search-hit" (type (eq 19)))
+    (type (;21;) (record (field "document-id" string)))
+    (export (;22;) "updated" (type (eq 21)))
+    (type (;23;) (list 18))
+    (type (;24;) (result 23 (error 1)))
+    (type (;25;) (func (result 24)))
+    (export "list-bases" (func (type 25)))
+    (type (;26;) (list 20))
+    (type (;27;) (result 26 (error 1)))
+    (type (;28;) (func (param "knowledge-base" string) (param "query" string) (param "limit" u32) (result 27)))
+    (export "search" (func (type 28)))
+    (type (;29;) (result 22 (error 1)))
+    (type (;30;) (func (param "knowledge-base" string) (param "document-id" string) (param "text" string) (result 29)))
+    (export "update" (func (type 30)))
   ))
   (import "greentic:extension-host/knowledge@0.1.0" (instance $k (type $kty)))
 
@@ -55,15 +74,24 @@
   (alias export $k "read" (func $read))
   (alias export $k "list" (func $list))
   (alias export $k "remove" (func $remove))
+  (alias export $k "list-bases" (func $list-bases))
+  (alias export $k "search" (func $search))
+  (alias export $k "update" (func $update))
   (core func $create-l (canon lower (func $create) (memory $memory) (realloc $realloc) string-encoding=utf8))
   (core func $read-l (canon lower (func $read) (memory $memory) (realloc $realloc) string-encoding=utf8))
   (core func $list-l (canon lower (func $list) (memory $memory) (realloc $realloc) string-encoding=utf8))
   (core func $remove-l (canon lower (func $remove) (memory $memory) (realloc $realloc) string-encoding=utf8))
+  (core func $list-bases-l (canon lower (func $list-bases) (memory $memory) (realloc $realloc) string-encoding=utf8))
+  (core func $search-l (canon lower (func $search) (memory $memory) (realloc $realloc) string-encoding=utf8))
+  (core func $update-l (canon lower (func $update) (memory $memory) (realloc $realloc) string-encoding=utf8))
   (core instance $kc
     (export "create" (func $create-l))
     (export "read" (func $read-l))
     (export "list" (func $list-l))
-    (export "remove" (func $remove-l)))
+    (export "remove" (func $remove-l))
+    (export "list-bases" (func $list-bases-l))
+    (export "search" (func $search-l))
+    (export "update" (func $update-l)))
 
   (core module $main
     (import "m" "memory" (memory 1))
@@ -71,10 +99,14 @@
     (import "k" "read" (func $read (param i32 i32 i32 i32 i32)))
     (import "k" "list" (func $list (param i32 i32 i32)))
     (import "k" "remove" (func $remove (param i32 i32 i32 i32 i32)))
+    (import "k" "list-bases" (func $list-bases (param i32)))
+    (import "k" "search" (func $search (param i32 i32 i32 i32 i32 i32)))
+    (import "k" "update" (func $update (param i32 i32 i32 i32 i32 i32 i32)))
     (data (i32.const 100) "Handbook")
     (data (i32.const 120) "note.md")
     (data (i32.const 140) "hello")
     (data (i32.const 160) "doc-1")
+    (data (i32.const 180) "refund")
     ;; err: tag | case<<8 (case at retptr+4 for 4-aligned payloads)
     (func $err4 (result i32)
       (i32.or (i32.load8_u (i32.const 64)) (i32.shl (i32.load8_u (i32.const 68)) (i32.const 8))))
@@ -102,7 +134,25 @@
     (func (export "call-remove") (result i32)
       (call $remove (i32.const 100) (i32.const 8) (i32.const 160) (i32.const 5) (i32.const 64))
       ;; result<bool, knowledge-error>: payload is 1-aligned, at retptr+1
-      (i32.or (i32.load8_u (i32.const 64)) (i32.shl (i32.load8_u (i32.const 65)) (i32.const 8)))))
+      (i32.or (i32.load8_u (i32.const 64)) (i32.shl (i32.load8_u (i32.const 65)) (i32.const 8))))
+    ;; ok: list length / document-id length in bits 16-31, read at retptr+8
+    (func $ok-len (result i32)
+      (if (result i32) (i32.load8_u (i32.const 64))
+        (then (call $err4))
+        (else (i32.shl (i32.load (i32.const 72)) (i32.const 16)))))
+    (func (export "call-list-bases") (result i32)
+      (call $list-bases (i32.const 64))
+      (call $ok-len))
+    ;; limit 50: the host clamps it to 20.
+    (func (export "call-search") (result i32)
+      (call $search (i32.const 100) (i32.const 8) (i32.const 180) (i32.const 6)
+        (i32.const 50) (i32.const 64))
+      (call $ok-len))
+    ;; updated { document-id: (ptr@68, len@72) }
+    (func (export "call-update") (result i32)
+      (call $update (i32.const 100) (i32.const 8) (i32.const 160) (i32.const 5)
+        (i32.const 140) (i32.const 5) (i32.const 64))
+      (call $ok-len)))
   (core instance $main-i (instantiate $main
     (with "m" (instance $m))
     (with "k" (instance $kc))))
@@ -111,4 +161,7 @@
   (func (export "call-read") (result u32) (canon lift (core func $main-i "call-read")))
   (func (export "call-list") (result u32) (canon lift (core func $main-i "call-list")))
   (func (export "call-remove") (result u32) (canon lift (core func $main-i "call-remove")))
+  (func (export "call-list-bases") (result u32) (canon lift (core func $main-i "call-list-bases")))
+  (func (export "call-search") (result u32) (canon lift (core func $main-i "call-search")))
+  (func (export "call-update") (result u32) (canon lift (core func $main-i "call-update")))
 )

@@ -88,7 +88,15 @@ fn extension_host_exposes_the_knowledge_interface() {
         .get("knowledge")
         .expect("extension-host must expose the `knowledge` interface");
     let iface = &resolve.interfaces[id];
-    for func in ["create", "read", "list", "remove"] {
+    for func in [
+        "create",
+        "read",
+        "list",
+        "remove",
+        "list-bases",
+        "search",
+        "update",
+    ] {
         assert!(
             iface.functions.contains_key(func),
             "knowledge must export `{func}`"

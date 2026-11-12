@@ -410,10 +410,25 @@ interface knowledge {
   read: func(knowledge-base: string, document-id: string) -> result<document, knowledge-error>;
   %list: func(knowledge-base: string) -> result<list<document-info>, knowledge-error>;
   remove: func(knowledge-base: string, document-id: string) -> result<bool, knowledge-error>;
+  record base-info { name: string, description: string, document-count: u64 }
+  record search-hit { document-id: string, name: string, passage: string, score: f32 }
+  record updated { document-id: string }
+  list-bases: func() -> result<list<base-info>, knowledge-error>;
+  search: func(knowledge-base: string, query: string, limit: u32) -> result<list<search-hit>, knowledge-error>;
+  update: func(knowledge-base: string, document-id: string, text: string) -> result<updated, knowledge-error>;
 }
 ```
 
-Each operation must be declared as `knowledge://<op>` in
+`list-bases` lists the bases the host allows for this call. `search` clamps
+`limit` to 1..=20, truncates the port's answer to it, returns no hits for a
+blank query without asking the port, and refuses a query over 4096 bytes
+(`too-large`); `passage` is truncated by the host, and how it matches is the
+host's choice. `update` replaces a document's text (10 MiB cap) and returns
+the id afterwards, which may differ from the one passed in (ids are content
+hashes).
+
+Each operation must be declared as `knowledge://<op>` (`create`, `read`,
+`list`, `remove`, `list-bases`, `search`, `update`) in
 `runtime.permissions.network` (see permissions-and-trust.md).
 
 | `knowledge-error` | Meaning |
