@@ -206,6 +206,7 @@ mod tests {
         .call_ctx(HostCallContext {
             tenant: Some("acme".into()),
             user_email: None,
+            ..HostCallContext::default()
         })
         .build();
 
@@ -244,6 +245,7 @@ mod tests {
         .call_ctx(HostCallContext {
             tenant: Some("acme".into()),
             user_email: Some("alice@acme.com".into()),
+            ..HostCallContext::default()
         })
         .build();
 

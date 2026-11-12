@@ -11,7 +11,9 @@ use std::sync::atomic::AtomicU32;
 use wasmtime::component::ResourceTable;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
-use crate::host_ports::{ArtifactPort, KeyTranslator, LlmPort, SecretsBackend, Translator};
+use crate::host_ports::{
+    ArtifactPort, KeyTranslator, KnowledgePort, LlmPort, SecretsBackend, Translator,
+};
 use crate::url_matcher::UrlMatcher;
 use greentic_extension_sdk_contract::describe::Permissions;
 
@@ -38,6 +40,7 @@ pub struct HostState {
     pub(crate) http_timeout: std::time::Duration,
     pub(crate) llm_port: Option<Arc<dyn LlmPort>>,
     pub(crate) artifact_port: Option<Arc<dyn ArtifactPort>>,
+    pub(crate) knowledge_port: Option<Arc<dyn KnowledgePort>>,
     /// Per-call caller context for this dispatch (tenant slug + authenticated
     /// user email), threaded from the host's
     /// [`crate::host_ports::HostCallContext`] and forwarded to host ports.
@@ -74,6 +77,7 @@ impl HostState {
             http_client: None,
             llm_port: None,
             artifact_port: None,
+            knowledge_port: None,
             call_ctx: crate::host_ports::HostCallContext::default(),
             url_matcher: UrlMatcher::default(),
             infra_grants: Vec::new(),
@@ -120,6 +124,7 @@ pub struct HostStateBuilder {
     http_client: Option<reqwest::blocking::Client>,
     llm_port: Option<Arc<dyn LlmPort>>,
     artifact_port: Option<Arc<dyn ArtifactPort>>,
+    knowledge_port: Option<Arc<dyn KnowledgePort>>,
     call_ctx: crate::host_ports::HostCallContext,
     url_matcher: UrlMatcher,
     infra_grants: Vec<crate::infra_grant::KindGrant>,
@@ -171,6 +176,13 @@ impl HostStateBuilder {
     #[must_use]
     pub fn artifact_port(mut self, p: Option<Arc<dyn ArtifactPort>>) -> Self {
         self.artifact_port = p;
+        self
+    }
+
+    /// Supply the host port backing `host.knowledge.*`.
+    #[must_use]
+    pub fn knowledge_port(mut self, p: Option<Arc<dyn KnowledgePort>>) -> Self {
+        self.knowledge_port = p;
         self
     }
 
@@ -237,6 +249,7 @@ impl HostStateBuilder {
             http_timeout: self.http_timeout,
             llm_port: self.llm_port,
             artifact_port: self.artifact_port,
+            knowledge_port: self.knowledge_port,
             call_ctx: self.call_ctx,
             url_matcher: self.url_matcher,
             infra_grants: self.infra_grants,
@@ -280,6 +293,7 @@ mod tests {
         );
         assert!(h.http_client.is_none(), "no ambient http client");
         assert!(h.llm_port.is_none(), "no ambient llm port");
+        assert!(h.knowledge_port.is_none(), "no ambient knowledge port");
         assert!(h.oauth_config.is_none(), "no ambient oauth broker");
     }
 

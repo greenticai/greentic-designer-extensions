@@ -112,6 +112,28 @@ be walked around entirely, which is why the security list below reads as pairs.
 
 ### Added
 
+- **`host.knowledge.*` (`greentic:extension-host/knowledge@0.1.0`).** A design
+  extension can create a text document in a knowledge base, read one back,
+  list a base's documents, and remove one from a base, through the new
+  `KnowledgePort` trait installed with `ExtensionRuntime::with_knowledge_port`
+  (no port: every call answers `unavailable`). Imported by the
+  `design-extension@0.4.0` world. Each operation must be declared as a
+  `knowledge://<op>` token (`create`, `read`, `list`, `remove`) in the existing
+  `runtime.permissions.network`; an undeclared operation answers `not-allowed`
+  and the tokens never reach the URL allow-list. No new `describe.json` key:
+  the contract's `Permissions` is `deny_unknown_fields`. Checked once in the
+  host before the port: the declared operation, a non-blank tenant, a base
+  name (blank, over 255 bytes or with a control character reads as
+  `not-allowed`, like an unknown base), a document id (`not-found`), text up
+  to 10 MiB and a name under the artifact name rule (over-length is
+  `too-large`). Errors are a closed set (`not-allowed`, `not-found`,
+  `too-large`, `invalid-media-type`, `quota-exceeded`, `unavailable`) and
+  never carry document text.
+- **`HostCallContext` gains `team` and `session_id`** (both `Option<String>`,
+  default `None`), so a host port can resolve per-team, per-session scope.
+  A caller that builds the context with a struct literal must add
+  `..HostCallContext::default()`.
+
 - **`host.artifact.put` (`greentic:extension-host/artifact@0.1.0`).** A design
   extension can store a file (image, PDF, CSV, ...) through the host and get an
   opaque `artifact://` id to return in its tool result; bytes never travel in a

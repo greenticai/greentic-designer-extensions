@@ -123,6 +123,62 @@ interface artifact {
   put: func(bytes: list<u8>, mime-type: string, name: string) -> result<string, artifact-error>;
 }
 
+/// Host interface for writing to the caller's knowledge library: create a
+/// text document in a knowledge base, read one back, list a base's documents,
+/// and remove one from a base. The host decides the tenant, the team and which
+/// bases the call may touch; a guest only ever names a base by the name an
+/// operator sees. Each operation must also be declared by the extension as a
+/// `knowledge://<op>` token in `runtime.permissions.network`.
+interface knowledge {
+  /// Closed set of failures. None of them carries document text.
+  variant knowledge-error {
+    /// The operation is not declared by the extension, the call carried no
+    /// tenant, or the base is not one this call may use. An unknown base reads
+    /// exactly like a forbidden one.
+    not-allowed,
+    /// No such document in that base.
+    not-found,
+    /// The text or the name is over the host's cap.
+    too-large,
+    /// The host refused the content (not UTF-8 text, markdown, CSV or JSON).
+    invalid-media-type,
+    /// The tenant's knowledge quota is exhausted.
+    quota-exceeded,
+    /// The host has no knowledge store, or it failed. Detail is logged
+    /// host-side, never returned.
+    unavailable,
+  }
+
+  record created {
+    document-id: string,
+    /// False when an identical document already existed and was reused.
+    created: bool,
+  }
+
+  record document {
+    name: string,
+    text: string,
+    /// True when the host returned only a prefix of the text.
+    truncated: bool,
+  }
+
+  record document-info {
+    document-id: string,
+    name: string,
+    size-chars: u64,
+  }
+
+  /// Create a document from `text` in the base named `knowledge-base`.
+  create: func(knowledge-base: string, name: string, text: string) -> result<created, knowledge-error>;
+  /// Read one document of the base.
+  read: func(knowledge-base: string, document-id: string) -> result<document, knowledge-error>;
+  /// List the documents of the base.
+  %list: func(knowledge-base: string) -> result<list<document-info>, knowledge-error>;
+  /// Remove a document from the base. The library document itself is kept.
+  /// Returns false when it was not a member.
+  remove: func(knowledge-base: string, document-id: string) -> result<bool, knowledge-error>;
+}
+
 world extension-host-world {
   import logging;
   import i18n;
@@ -131,4 +187,5 @@ world extension-host-world {
   import http;
   import llm;
   import artifact;
+  import knowledge;
 }

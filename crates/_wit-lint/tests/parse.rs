@@ -67,3 +67,41 @@ fn extension_host_exposes_the_artifact_interface() {
         Some("0.1.0")
     );
 }
+
+#[test]
+fn extension_host_exposes_the_knowledge_interface() {
+    let dir = wit_dir();
+    let mut resolve = Resolve::new();
+    for name in ["extension-base.wit", "extension-host.wit"] {
+        resolve
+            .push_file(dir.join(name))
+            .unwrap_or_else(|e| panic!("failed to parse {name}: {e}"));
+    }
+    let package = resolve
+        .packages
+        .iter()
+        .find(|(_, p)| p.name.namespace == "greentic" && p.name.name == "extension-host")
+        .map(|(_, p)| p)
+        .expect("greentic:extension-host package");
+    let id = *package
+        .interfaces
+        .get("knowledge")
+        .expect("extension-host must expose the `knowledge` interface");
+    let iface = &resolve.interfaces[id];
+    for func in ["create", "read", "list", "remove"] {
+        assert!(
+            iface.functions.contains_key(func),
+            "knowledge must export `{func}`"
+        );
+    }
+    // Additive only: the package version must NOT move.
+    assert_eq!(
+        package
+            .name
+            .version
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("0.1.0")
+    );
+}

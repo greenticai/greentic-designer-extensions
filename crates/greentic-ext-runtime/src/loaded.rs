@@ -74,6 +74,10 @@ pub(crate) fn add_host_interfaces(linker: &mut Linker<HostState>) -> anyhow::Res
         HostState,
         HasSelf<HostState>,
     >(linker, |s| s)?;
+    crate::host_bindings::design_v04::greentic::extension_host::knowledge::add_to_linker::<
+        HostState,
+        HasSelf<HostState>,
+    >(linker, |s| s)?;
     Ok(())
 }
 
@@ -118,6 +122,13 @@ impl LoadedExtension {
     }
 }
 
+/// Host ports the embedder installed on the runtime, handed to every dispatch.
+#[derive(Clone, Default)]
+pub(crate) struct DispatchPorts {
+    pub(crate) artifact: Option<Arc<dyn crate::host_ports::ArtifactPort>>,
+    pub(crate) knowledge: Option<Arc<dyn crate::host_ports::KnowledgePort>>,
+}
+
 impl LoadedExtension {
     /// Build a fresh wasmtime Store with [`HostState`] and instantiate the component.
     /// Each call creates a new instance: a `Store` is single-threaded and
@@ -128,7 +139,7 @@ impl LoadedExtension {
         host_overrides: HostOverrides,
         ctx: &crate::host_ports::HostCallContext,
         dispatch_timeout: Option<std::time::Duration>,
-        artifact_port: Option<Arc<dyn crate::host_ports::ArtifactPort>>,
+        ports: DispatchPorts,
         infra_settings: Arc<crate::infra_grant::InfraGrantSettings>,
     ) -> anyhow::Result<(Store<HostState>, Instance)> {
         let mut linker: Linker<HostState> = Linker::new(engine);
@@ -146,7 +157,9 @@ impl LoadedExtension {
         // declared the host-level override is used unchanged (deny-all by
         // default). See `effective_url_matcher` for the loopback-http rule.
         let (url_matcher, infra_grants) = crate::net_permissions::effective_url_matcher_with_grants(
-            &self.describe.runtime.permissions.network,
+            &crate::knowledge_grant::without_knowledge_tokens(
+                &self.describe.runtime.permissions.network,
+            ),
             host_overrides.url_matcher,
         );
 
@@ -159,7 +172,8 @@ impl LoadedExtension {
         .http_client(host_overrides.http_client)
         .http_timeout(crate::limits::http_timeout_for(dispatch_timeout))
         .llm_port(host_overrides.llm_port)
-        .artifact_port(artifact_port)
+        .artifact_port(ports.artifact)
+        .knowledge_port(ports.knowledge)
         .call_ctx(ctx.clone())
         .url_matcher(url_matcher)
         .infra_grants(infra_grants, infra_settings)

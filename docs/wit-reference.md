@@ -392,6 +392,46 @@ A component that actually imports `artifact` (calls `put`) fails to instantiate
 on a host that predates the interface; one that does not import it is
 unaffected.
 
+### `greentic:extension-host/knowledge`
+
+Write to the caller's knowledge library. Imported by the
+`design-extension@0.4.0` world only. The host decides tenant, team and which
+bases the call may touch; the guest names a base by its operator-visible name.
+
+```wit
+interface knowledge {
+  variant knowledge-error {
+    not-allowed, not-found, too-large, invalid-media-type, quota-exceeded, unavailable,
+  }
+  record created { document-id: string, created: bool }
+  record document { name: string, text: string, truncated: bool }
+  record document-info { document-id: string, name: string, size-chars: u64 }
+  create: func(knowledge-base: string, name: string, text: string) -> result<created, knowledge-error>;
+  read: func(knowledge-base: string, document-id: string) -> result<document, knowledge-error>;
+  %list: func(knowledge-base: string) -> result<list<document-info>, knowledge-error>;
+  remove: func(knowledge-base: string, document-id: string) -> result<bool, knowledge-error>;
+}
+```
+
+Each operation must be declared as `knowledge://<op>` in
+`runtime.permissions.network` (see permissions-and-trust.md).
+
+| `knowledge-error` | Meaning |
+|---|---|
+| `not-allowed` | Undeclared operation, no tenant, or a base the call may not use (an unknown base reads the same). |
+| `not-found` | No such document in the base (or a malformed document id). |
+| `too-large` | Text over 10 MiB, a name over 255 bytes, or over the host's own cap. |
+| `invalid-media-type` | The host refused the content. |
+| `quota-exceeded` | The tenant's knowledge quota is exhausted. |
+| `unavailable` | No knowledge port installed, or the store failed; detail logged host-side only. |
+
+`create` reports `created: false` when the host reused an identical document.
+`remove` deletes the base membership only and returns `false` when the
+document was not a member. No error carries document text.
+
+A component that imports `knowledge` fails to instantiate on a host that
+predates the interface; one that does not import it is unaffected.
+
 ---
 
 ## `greentic:extension-design@0.1.0`

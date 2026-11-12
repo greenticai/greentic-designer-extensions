@@ -117,6 +117,22 @@ this release. It is gated by the host installing an artifact port
 otherwise). A permission field is a possible follow-up and needs an
 SDK-contract release because `Permissions` is `deny_unknown_fields`.
 
+### `knowledge://<op>` (inside `network`)
+
+`host.knowledge.*` is gated per operation by a token in `network`:
+`knowledge://create`, `knowledge://read`, `knowledge://list`,
+`knowledge://remove`. Exact spelling only: no wildcard, no case folding, and a
+token naming any other operation grants nothing. A call to an undeclared
+operation answers `not-allowed` before the host port sees it. The tokens are
+stripped before the URL allow-list is built, so they never widen network
+reach. They ride `network` (like `infra://` grants) because `Permissions` is
+`deny_unknown_fields`; `gtdx publish` must admit the token before an extension
+declaring it can be published.
+
+The host also requires a tenant in the call context, and the embedding host's
+port decides which bases the call may use (a forbidden and an unknown base both
+answer `not-allowed`).
+
 ---
 
 ## Default-Deny Semantics
