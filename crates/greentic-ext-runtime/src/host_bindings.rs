@@ -137,6 +137,21 @@ pub mod sorx {
     });
 }
 
+// ---------------------------------------------------------------------------
+// Hosting-provider bindings (`greentic:extension-hosting`).
+//
+// Isolated submodule like the other worlds. Its three imports (`log`,
+// `target`, `api`) are deliberately NOT registered by `add_host_interfaces`:
+// only the dedicated hosting linker in `loaded_hosting.rs` provides them, so
+// no other kind of extension can reach `api.call`.
+// ---------------------------------------------------------------------------
+pub mod hosting {
+    wasmtime::component::bindgen!({
+        path: "wit",
+        world: "greentic:extension-hosting/hosting-extension@0.1.0",
+    });
+}
+
 /// Registers the production host interfaces on `linker`. Exists so integration
 /// tests link against exactly what dispatch links against; not for embedders.
 #[doc(hidden)]

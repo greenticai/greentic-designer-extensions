@@ -1,0 +1,185 @@
+package greentic:extension-hosting@0.1.0;
+
+/// Hosting-provider world (P1 of "provisioning logic lives in extensions").
+///
+/// A hosting extension turns "run this containerised service for me" into the
+/// provider's own API calls (ECS, Cloud Run, Kubernetes, a VM agent, ...). The
+/// host owns every credential and every policy decision; the guest owns the
+/// provider logic and nothing else.
+///
+/// Deliberately ABSENT from this world, and enforced by the linker the runtime
+/// builds for it (not by convention): `greentic:extension-host/secrets`,
+/// `http`, `broker`, `llm`, `artifact`, the OAuth broker, and every WASI clock,
+/// socket and poll-with-timer. A component that imports any of them does not
+/// instantiate. There is no state, no clock, no random and no sleep: the only
+/// way to wait is to return `pending` and be asked again.
+///
+/// Where it is declared: an extension of the EXISTING kind `DeployExtension`
+/// that offers the capability `cap://hosting/provider` (see
+/// docs/hosting-provider-world.md for why not a new kind).
+
+interface log {
+  enum level {
+    trace,
+    debug,
+    info,
+    warn,
+    error,
+  }
+  /// Size-limited, rate-limited and scrubbed by the host. Never a way to
+  /// return data: nothing the guest logs reaches an API response or a row.
+  log: func(level: level, message: string);
+}
+
+interface target {
+  /// A NON-SECRET setting of the target this call runs for, saved by the
+  /// platform admin against the schema the provider published in
+  /// `describe-provider`. `none` when unset.
+  ///
+  /// Three reserved keys carry per-call facts:
+  ///   `installation-id`        the installation that owns the hosts
+  ///   `owner-tags`             JSON array of [key, value] pairs: the ownership
+  ///                            tags every created object must carry
+  ///   `credential-fingerprint` HMAC of the resource's instance credential, for
+  ///                            drift detection (never the credential)
+  ///
+  /// Any key that names key material (credential, secret, token, password,
+  /// private key, api key) answers `none`, whatever the target holds.
+  get: func(key: string) -> option<string>;
+}
+
+interface api {
+  record response {
+    status: u16,
+    /// A short allow-list of benign response headers; signing and
+    /// authorisation headers are never returned.
+    headers: list<tuple<string, string>>,
+    body: list<u8>,
+  }
+
+  /// Closed on purpose. The call-count cap maps to `denied-by-policy` and the
+  /// per-invocation deadline to `timeout`.
+  enum api-error {
+    /// The endpoint id is not declared by this provider.
+    not-declared,
+    /// Declared endpoint, but the request is outside what was approved: an
+    /// undeclared action, a non-allow-listed header, an oversized request, a
+    /// host outside the platform allow-list, or a spent call budget.
+    denied-by-policy,
+    timeout,
+    transport,
+    /// The response exceeded the size cap and was dropped.
+    too-large,
+  }
+
+  /// `endpoint-id` is an id declared in `describe-provider`, NOT a URL: the
+  /// host builds the URL from the endpoint's host template and the target
+  /// settings, signs or authorises the request, and attaches the credential.
+  /// `path` is path and query only. `${resource.credential}` and
+  /// `${resource.credential_fingerprint}` inside a UTF-8 body or a header
+  /// value are substituted by the host; the guest never receives the value.
+  call: func(
+    endpoint-id: string,
+    method: string,
+    path: string,
+    body: option<list<u8>>,
+    headers: list<tuple<string, string>>,
+  ) -> result<response, api-error>;
+}
+
+interface provider {
+  record provider-descriptor {
+    /// "aws_ecs", "kubernetes", "gcp_run", "vm"
+    id: string,
+    display-name: string,
+    /// JSON Schema of the non-secret target settings; the admin form is drawn
+    /// from it.
+    settings-schema: string,
+    /// JSON Schema of the sealed credential; fields flagged `secret: true`.
+    credential-schema: string,
+    /// JSON array of endpoint declarations:
+    /// [{"id", "host", "profile": {"id", ...}, "actions": [...]}]
+    endpoints: string,
+    /// JSON: {"persistent-data": bool, "public-https": bool,
+    ///        "reachability": "public" | "private"}
+    capabilities: string,
+    /// "ecs:", "k8s:", ... every host-ref must start with it.
+    ref-prefix: string,
+  }
+
+  enum diagnostic-level {
+    info,
+    warning,
+    error,
+  }
+  record diagnostic {
+    level: diagnostic-level,
+    /// Stable machine token.
+    code: string,
+    /// Shown to the platform admin after the host scrubs and truncates it.
+    message: string,
+  }
+
+  record host-spec {
+    kind: string,
+    version: string,
+    size: string,
+    /// The validated `hosting` object of the kind.
+    hosting-json: string,
+  }
+
+  record host-handle {
+    host-ref: string,
+    host: string,
+    port: u16,
+    scheme: string,
+    extras: list<tuple<string, string>>,
+  }
+
+  variant host-outcome {
+    pending,
+    ready(host-handle),
+  }
+
+  enum destroy-mode {
+    retain,
+    destroy-data,
+  }
+
+  /// Closed. Each variant maps to one fixed phrase on the admin side; guest
+  /// text never reaches a row, a log line or an API body.
+  enum host-error {
+    unsupported-kind,
+    not-configured,
+    not-owned,
+    at-capacity,
+    rejected,
+    unreachable,
+    quota,
+  }
+
+  /// Pure: no `api.call`.
+  describe-provider: func() -> provider-descriptor;
+  validate-settings: func(settings-json: string) -> list<diagnostic>;
+  /// Read-only checks of the credential's permissions (IAM simulate, SSAR).
+  preflight: func() -> list<diagnostic>;
+
+  /// Pure: can this provider run this kind?
+  supports: func(hosting-json: string) -> bool;
+  /// Pure and derivable before the host exists.
+  host-ref-for: func(host-id: string) -> string;
+
+  /// Idempotent per `host-id`. `pending` means "ask again next pass".
+  ensure-host: func(spec: host-spec, host-id: string) -> result<host-outcome, host-error>;
+  describe-host: func(host-ref: string) -> result<host-outcome, host-error>;
+  list-owned: func() -> result<list<string>, host-error>;
+  /// Idempotent: an unknown ref is `ok`.
+  destroy: func(host-ref: string, mode: destroy-mode) -> result<_, host-error>;
+}
+
+world hosting-extension {
+  import log;
+  import target;
+  import api;
+  export provider;
+}
