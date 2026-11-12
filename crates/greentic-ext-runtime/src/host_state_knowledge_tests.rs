@@ -7,8 +7,9 @@ use crate::host_bindings::design_v04::greentic::extension_host::knowledge::{
     Host as KnowledgeHost, KnowledgeError,
 };
 use crate::host_ports::{
-    HostCallContext, KnowledgeCreateRequest, KnowledgeCreated, KnowledgeDocument,
-    KnowledgeDocumentInfo, KnowledgePort, KnowledgePortError,
+    HostCallContext, KnowledgeBaseInfo, KnowledgeCreateRequest, KnowledgeCreated,
+    KnowledgeDocument, KnowledgeDocumentInfo, KnowledgePort, KnowledgePortError,
+    KnowledgeSearchHit, KnowledgeSearchRequest, KnowledgeUpdateRequest, KnowledgeUpdated,
 };
 
 /// Records every call with the scope it arrived in.
@@ -29,7 +30,7 @@ impl Recording {
             None => Ok(()),
         }
     }
-    fn ops(&self) -> Vec<String> {
+    pub(crate) fn ops(&self) -> Vec<String> {
         self.calls
             .lock()
             .unwrap()
@@ -93,16 +94,67 @@ impl KnowledgePort for Recording {
         self.record(&format!("remove:{kb}:{id}"), ext, ctx)?;
         Ok(true)
     }
+    fn list_bases(
+        &self,
+        ext: &str,
+        ctx: &HostCallContext,
+    ) -> Result<Vec<KnowledgeBaseInfo>, KnowledgePortError> {
+        self.record("list-bases", ext, ctx)?;
+        Ok(vec![KnowledgeBaseInfo {
+            name: "Handbook".into(),
+            description: "Policies".into(),
+            document_count: 2,
+        }])
+    }
+    /// Returns 25 hits whatever the limit, so the runtime's truncation shows.
+    fn search(
+        &self,
+        ext: &str,
+        ctx: &HostCallContext,
+        req: KnowledgeSearchRequest,
+    ) -> Result<Vec<KnowledgeSearchHit>, KnowledgePortError> {
+        self.record(
+            &format!("search:{}:{}:{}", req.knowledge_base, req.query, req.limit),
+            ext,
+            ctx,
+        )?;
+        Ok((0..25)
+            .map(|i| KnowledgeSearchHit {
+                document_id: format!("doc-{i}"),
+                name: "note.md".into(),
+                passage: "refund policy".into(),
+                score: 0.5,
+            })
+            .collect())
+    }
+    fn update(
+        &self,
+        ext: &str,
+        ctx: &HostCallContext,
+        req: KnowledgeUpdateRequest,
+    ) -> Result<KnowledgeUpdated, KnowledgePortError> {
+        self.record(
+            &format!(
+                "update:{}:{}:{}",
+                req.knowledge_base, req.document_id, req.text
+            ),
+            ext,
+            ctx,
+        )?;
+        Ok(KnowledgeUpdated {
+            document_id: "doc-2".into(),
+        })
+    }
 }
 
-const ALL: [&str; 4] = [
+pub(crate) const ALL: [&str; 4] = [
     "knowledge://create",
     "knowledge://read",
     "knowledge://list",
     "knowledge://remove",
 ];
 
-fn scoped_ctx(tenant: Option<&str>) -> HostCallContext {
+pub(crate) fn scoped_ctx(tenant: Option<&str>) -> HostCallContext {
     HostCallContext {
         tenant: tenant.map(str::to_string),
         user_email: Some("u@example.com".into()),
@@ -111,7 +163,11 @@ fn scoped_ctx(tenant: Option<&str>) -> HostCallContext {
     }
 }
 
-fn host(port: Option<Arc<Recording>>, tenant: Option<&str>, declared: &[&str]) -> crate::HostState {
+pub(crate) fn host(
+    port: Option<Arc<Recording>>,
+    tenant: Option<&str>,
+    declared: &[&str],
+) -> crate::HostState {
     let permissions = Permissions {
         network: declared.iter().map(ToString::to_string).collect(),
         ..Permissions::default()
@@ -124,7 +180,7 @@ fn host(port: Option<Arc<Recording>>, tenant: Option<&str>, declared: &[&str]) -
     b.build()
 }
 
-fn s(v: &str) -> String {
+pub(crate) fn s(v: &str) -> String {
     v.to_string()
 }
 
@@ -353,3 +409,6 @@ fn a_blank_document_id_from_the_port_is_unavailable() {
         Err(KnowledgeError::Unavailable)
     ));
 }
+
+#[path = "host_state_knowledge_general_tests.rs"]
+mod general;

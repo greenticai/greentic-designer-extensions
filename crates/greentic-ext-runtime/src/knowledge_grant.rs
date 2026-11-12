@@ -1,7 +1,8 @@
 //! Which `greentic:extension-host/knowledge` operations an extension declared.
 //!
 //! An extension lists `knowledge://<op>` tokens, one per operation it uses
-//! (`create`, `read`, `list`, `remove`), in its existing
+//! (`create`, `read`, `list`, `remove`,
+//! `list-bases`, `search`, `update`), in its existing
 //! `runtime.permissions.network`. No new `describe.json` key exists: the
 //! contract's `Permissions` is `deny_unknown_fields`, so a new key would make
 //! every designer that predates it refuse the whole describe. This is the
@@ -21,6 +22,9 @@ pub(crate) enum KnowledgeOp {
     Read,
     List,
     Remove,
+    ListBases,
+    Search,
+    Update,
 }
 
 impl KnowledgeOp {
@@ -30,6 +34,9 @@ impl KnowledgeOp {
             Self::Read => "read",
             Self::List => "list",
             Self::Remove => "remove",
+            Self::ListBases => "list-bases",
+            Self::Search => "search",
+            Self::Update => "update",
         }
     }
 
@@ -39,6 +46,9 @@ impl KnowledgeOp {
             "read" => Some(Self::Read),
             "list" => Some(Self::List),
             "remove" => Some(Self::Remove),
+            "list-bases" => Some(Self::ListBases),
+            "search" => Some(Self::Search),
+            "update" => Some(Self::Update),
             _ => None,
         }
     }
@@ -66,6 +76,9 @@ pub(crate) fn declared_ops(network: &[String]) -> Vec<KnowledgeOp> {
         KnowledgeOp::Read,
         KnowledgeOp::List,
         KnowledgeOp::Remove,
+        KnowledgeOp::ListBases,
+        KnowledgeOp::Search,
+        KnowledgeOp::Update,
     ]
     .into_iter()
     .filter(|op| declares(network, *op))
@@ -124,6 +137,27 @@ mod tests {
             "knowledge://delete",
         ]);
         assert!(declared_ops(&net).is_empty());
+    }
+
+    #[test]
+    fn the_three_general_operations_have_their_own_tokens() {
+        let net = s(&[
+            "knowledge://list-bases",
+            "knowledge://search",
+            "knowledge://update",
+        ]);
+        assert_eq!(
+            declared_ops(&net),
+            vec![
+                KnowledgeOp::ListBases,
+                KnowledgeOp::Search,
+                KnowledgeOp::Update
+            ]
+        );
+        // Underscore and bare spellings grant nothing.
+        let wrong = s(&["knowledge://list_bases", "knowledge://listbases"]);
+        assert!(declared_ops(&wrong).is_empty());
+        assert!(without_knowledge_tokens(&net).is_empty());
     }
 
     #[test]

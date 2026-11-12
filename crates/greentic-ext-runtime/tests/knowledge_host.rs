@@ -6,19 +6,32 @@ use std::sync::{Arc, Mutex};
 
 use greentic_ext_runtime::HostState;
 use greentic_ext_runtime::host_ports::{
-    HostCallContext, KnowledgeCreateRequest, KnowledgeCreated, KnowledgeDocument,
-    KnowledgeDocumentInfo, KnowledgePort, KnowledgePortError,
+    HostCallContext, KnowledgeBaseInfo, KnowledgeCreateRequest, KnowledgeCreated,
+    KnowledgeDocument, KnowledgeDocumentInfo, KnowledgePort, KnowledgePortError,
+    KnowledgeSearchHit, KnowledgeSearchRequest, KnowledgeUpdateRequest, KnowledgeUpdated,
 };
 use greentic_extension_sdk_contract::describe::Permissions;
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Engine, Store};
 
 const FIXTURE: &str = include_str!("fixtures/knowledge_import.wat");
-const ALL: [&str; 4] = [
+const ALL: [&str; 7] = [
     "knowledge://create",
     "knowledge://read",
     "knowledge://list",
     "knowledge://remove",
+    "knowledge://list-bases",
+    "knowledge://search",
+    "knowledge://update",
+];
+const PROBES: [&str; 7] = [
+    "call-create",
+    "call-read",
+    "call-list",
+    "call-remove",
+    "call-list-bases",
+    "call-search",
+    "call-update",
 ];
 
 #[derive(Default)]
@@ -89,6 +102,56 @@ impl KnowledgePort for Recording {
         self.note(format!("remove:{kb}:{id}"), ctx);
         Ok(true)
     }
+    fn list_bases(
+        &self,
+        _ext: &str,
+        ctx: &HostCallContext,
+    ) -> Result<Vec<KnowledgeBaseInfo>, KnowledgePortError> {
+        self.note("list-bases".into(), ctx);
+        Ok((0..2)
+            .map(|i| KnowledgeBaseInfo {
+                name: format!("base-{i}"),
+                description: String::new(),
+                document_count: 1,
+            })
+            .collect())
+    }
+    fn search(
+        &self,
+        _ext: &str,
+        ctx: &HostCallContext,
+        req: KnowledgeSearchRequest,
+    ) -> Result<Vec<KnowledgeSearchHit>, KnowledgePortError> {
+        self.note(
+            format!("search:{}:{}:{}", req.knowledge_base, req.query, req.limit),
+            ctx,
+        );
+        Ok((0..4)
+            .map(|i| KnowledgeSearchHit {
+                document_id: format!("doc-{i}"),
+                name: "n.md".into(),
+                passage: "refund".into(),
+                score: 0.9,
+            })
+            .collect())
+    }
+    fn update(
+        &self,
+        _ext: &str,
+        ctx: &HostCallContext,
+        req: KnowledgeUpdateRequest,
+    ) -> Result<KnowledgeUpdated, KnowledgePortError> {
+        self.note(
+            format!(
+                "update:{}:{}:{}",
+                req.knowledge_base, req.document_id, req.text
+            ),
+            ctx,
+        );
+        Ok(KnowledgeUpdated {
+            document_id: "doc-new".into(),
+        })
+    }
 }
 
 struct Guest {
@@ -157,6 +220,13 @@ fn a_guest_calls_every_operation_and_the_port_sees_its_arguments_and_scope() {
     assert_eq!((tag(listed), len(listed)), (0, 3));
     let removed = guest.call("call-remove");
     assert_eq!((tag(removed), second(removed)), (0, 1));
+    let bases = guest.call("call-list-bases");
+    assert_eq!((tag(bases), len(bases)), (0, 2));
+    let hits = guest.call("call-search");
+    assert_eq!((tag(hits), len(hits)), (0, 4));
+    // `doc-new` is 7 bytes.
+    let updated = guest.call("call-update");
+    assert_eq!((tag(updated), len(updated)), (0, 7));
 
     assert_eq!(
         *port.calls.lock().unwrap(),
@@ -165,6 +235,10 @@ fn a_guest_calls_every_operation_and_the_port_sees_its_arguments_and_scope() {
             "read:Handbook:doc-1",
             "list:Handbook",
             "remove:Handbook:doc-1",
+            "list-bases",
+            // The guest asked for 50; the runtime clamps to 20.
+            "search:Handbook:refund:20",
+            "update:Handbook:doc-1:hello",
         ]
     );
     for ctx in port.scopes.lock().unwrap().iter() {
@@ -191,9 +265,37 @@ fn an_undeclared_operation_is_refused_with_not_allowed() {
 }
 
 #[test]
+fn each_general_operation_is_refused_with_not_allowed_when_undeclared() {
+    let port = Arc::new(Recording::default());
+    // The original four only.
+    let mut g = Guest::new(Some(port.clone()), &ALL[..4]);
+    for probe in ["call-list-bases", "call-search", "call-update"] {
+        let p = g.call(probe);
+        assert_eq!(
+            (tag(p), second(p)),
+            (1, 0),
+            "{probe}: case 0 is not-allowed"
+        );
+    }
+    assert!(port.calls.lock().unwrap().is_empty());
+    // And each one alone grants only itself.
+    for (token, probe) in [
+        ("knowledge://list-bases", "call-list-bases"),
+        ("knowledge://search", "call-search"),
+        ("knowledge://update", "call-update"),
+    ] {
+        let mut g = Guest::new(Some(Arc::new(Recording::default())), &[token]);
+        for other in PROBES {
+            let want = u32::from(other != probe);
+            assert_eq!(tag(g.call(other)), want, "{token} then {other}");
+        }
+    }
+}
+
+#[test]
 fn without_an_installed_port_every_operation_answers_unavailable() {
     let mut g = Guest::new(None, &ALL);
-    for probe in ["call-create", "call-read", "call-list", "call-remove"] {
+    for probe in PROBES {
         let p = g.call(probe);
         assert_eq!(
             (tag(p), second(p)),
